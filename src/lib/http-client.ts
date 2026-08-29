@@ -1,9 +1,10 @@
 /**
- * HTTP Client with automatic token handling via httpOnly cookies
- * Intercepts all requests to add credentials and handle 401 responses
+ * HTTP Client with automatic token handling via Authorization header
  * 
- * Note: Token is managed by the backend as httpOnly cookie
- * This client only needs to include cookies in requests
+ * El backend devuelve el token en Set-Cookie (httpOnly) pero ADEMÁS en el JSON response.
+ * Como tenemos dominios diferentes (apps.chaide.com vs localhost:5400),
+ * los cookies cross-domain NO se envían. Por eso guardamos el token en localStorage
+ * y lo enviamos en Authorization Bearer header.
  */
 
 import { toast } from "@/hooks/use-toast";
@@ -13,12 +14,29 @@ export type FetchOptions = RequestInit & {
 };
 
 /**
- * Fetch wrapper that automatically:
- * 1. Includes httpOnly cookies with credentials: 'include'
- * 2. Handles 401 errors by clearing local auth state and redirecting to login
+ * Obtiene el token del localStorage
+ */
+function getToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  
+  // Buscar en múltiples claves (por compatibilidad)
+  const token = localStorage.getItem('auth_token') || localStorage.getItem('token');
+  
+  if (token) {
+    console.log('🔑 Token encontrado en localStorage');
+  } else {
+    console.warn('⚠️ NO hay token en localStorage');
+  }
+  return token;
+}
+
+/**
+ * Fetch wrapper que automáticamente:
+ * 1. Incluye el token en el header Authorization Bearer
+ * 2. Maneja errores sin borrar datos
  * 
  * @param url - The URL to fetch
- * @param options - Fetch options (can include skipAuth: true to skip credentials)
+ * @param options - Fetch options (puede incluir skipAuth: true para saltar autenticación)
  * @returns Promise with the fetch response
  */
 export async function fetchWithAuth(
@@ -27,19 +45,37 @@ export async function fetchWithAuth(
 ) {
   const { skipAuth = false, ...restOptions } = options;
 
-  // Realizar la petición con credenciales (incluye httpOnly cookies)
+  const headers = {
+    ...restOptions.headers,
+  };
+
+  // Agregar token en Authorization header si no es skipAuth
+  if (!skipAuth) {
+    const token = getToken();
+    if (token) {
+      (headers as any)['Authorization'] = `Bearer ${token}`;
+      console.log('✅ Token enviado en Authorization Bearer header');
+    } else {
+      console.warn('⚠️ No hay token para enviar en Authorization header a:', url);
+    }
+  }
+
+  console.log(`📡 Petición a: ${url}`);
+
+  // Determinar si debemos enviar credenciales
+  // Solo para dominios del backend de autenticación (para mantener las cookies de sesión)
+  const shouldIncludeCredentials = url.includes('apps.chaide.com');
+
+  // Realizar la petición
   const response = await fetch(url, {
     ...restOptions,
-    credentials: skipAuth ? 'omit' : 'include', // 'include' para enviar cookies
+    headers,
+    credentials: shouldIncludeCredentials ? 'include' : 'omit', // ✅ Selectivo
   });
 
-  // Si error 401 (Unauthorized), limpiar auth local y redirigir a login
+  // Si error 401 (Unauthorized), solo loguear
   if (response.status === 401) {
-    clearAuthData();
-    // Comentado para debuggear:
-    // redirectToLogin();
-    // Intentar extraer mensaje del body sin consumir el stream original
-    let errMsg = 'Tu sesión ha expirado. Por favor, inicia sesión de nuevo.';
+    let errMsg = 'No autorizado (401).';
     try {
       const cloned = response.clone();
       const body = await cloned.json().catch(() => null);
@@ -51,42 +87,27 @@ export async function fetchWithAuth(
     } catch (_) {
       // Ignorar errores al parsear
     }
-    toast({
-      title: 'Error de autenticación',
-      description: errMsg,
-      variant: 'destructive',
-    });
-    console.error('❌ Error 401 - Sesión no válida', errMsg);
-    throw new Error(errMsg);
+    console.warn('⚠️ Error 401 en:', url, '→', errMsg);
   }
 
   return response;
 }
 
 /**
- * Limpia todos los datos de autenticación local del localStorage
- * Nota: La cookie httpOnly se maneja en el backend
+ * Limpia todos los datos de autenticación local
  */
 function clearAuthData() {
   if (typeof window !== 'undefined') {
+    localStorage.removeItem('auth_token');  // Nueva clave
+    localStorage.removeItem('token');       // Vieja clave (por compatibilidad)
     localStorage.removeItem('user');
     localStorage.removeItem('appsByProfile');
-  }
-}
-
-/**
- * Redirige al usuario a la página de login
- */
-function redirectToLogin() {
-  if (typeof window !== 'undefined') {
-    const basePath = ((window as any).__NEXT_DATA__?.basePath || process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/+$/, '');
-    window.location.href = basePath ? `${basePath}/` : '/';
+    console.warn('❌ Auth data clearedjl - Token eliminado');
   }
 }
 
 /**
  * Limpia todos los datos de autenticación local
- * Nota: El backend se encarga de limpiar la cookie httpOnly en logout
  */
 export function clearAuth() {
   clearAuthData();

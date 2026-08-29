@@ -15,7 +15,7 @@ import { tipoUsuarioAplicacionService } from '@/services/seguridades/tipoUsuario
 import { menuService } from '@/services/seguridades/menu.service';
 import { permisosService } from '@/services/permisos.service';
 import { menuTipoUsuarioService } from '@/services/seguridades/menuTipoUsuario.service';
-import * as LucideIcons from 'lucide-react';
+import { getIcon } from '@/lib/icon-map';
 
 interface AppProfilesFormProps {
   // none for now
@@ -344,12 +344,12 @@ export default function AppProfilesForm(_props: AppProfilesFormProps) {
             }`}
             onClick={() => setSelectedMenuId(n.codigo_menu)}
           >
-            <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2">
               <div className="w-6 h-6">
                 {n.icono
                   ? (() => {
-                      const Comp = (LucideIcons as any)[n.icono];
-                      return Comp ? <Comp className="h-5 w-5" /> : null;
+                      const Comp = getIcon(n.icono);
+                      return <Comp className="h-5 w-5" />;
                     })()
                   : null}
               </div>
@@ -544,10 +544,10 @@ export default function AppProfilesForm(_props: AppProfilesFormProps) {
                         <div className="w-6 h-6">
                           {item.icono
                             ? (() => {
-                                const Comp = (LucideIcons as any)[item.icono];
-                                return Comp ? (
+                                const Comp = getIcon(item.icono);
+                                return (
                                   <Comp className="h-5 w-5" />
-                                ) : null;
+                                );
                               })()
                             : null}
                         </div>

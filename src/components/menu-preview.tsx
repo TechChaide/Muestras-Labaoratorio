@@ -8,12 +8,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import * as LucideIcons from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import React, { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
+import { getIcon } from '@/lib/icon-map';
 
 interface MenuPreviewProps {
   menuItems: MenuItem[];
@@ -21,8 +21,7 @@ interface MenuPreviewProps {
 }
 
 const Icon = ({ name, className }: { name: string; className?: string }) => {
-  const LucideIcon = (LucideIcons as any)[name];
-  if (!LucideIcon) return <LucideIcons.Minus className={className} />;
+  const LucideIcon = getIcon(name);
   return <LucideIcon className={className} />;
 };
 

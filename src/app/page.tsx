@@ -105,6 +105,10 @@ export default function LoginPage() {
             
             const response = await authService.loginCentral({ email: usuario, password });
 
+            // Verificar si el token se guardó en localStorage
+            const tokenGuardado = localStorage.getItem('auth_token');
+            console.log('🔐 Token en localStorage después del login:', tokenGuardado ? '✅ GUARDADO' : '❌ NO GUARDADO');
+
             // Con httpOnly cookies, el token está en la cookie (no en el body)
             // Solo verificamos que user y perfiles existan
             const layered = (obj: any, keys: string[]): any => keys.reduce((acc, k) => (acc && acc[k] !== undefined ? acc[k] : undefined), obj);

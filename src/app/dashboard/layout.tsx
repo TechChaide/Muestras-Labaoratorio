@@ -16,7 +16,7 @@ import {
     TooltipProvider,
     TooltipTrigger,
 } from "@/components/ui/tooltip"
-import { ChevronsUpDown, BookUser, Shield, Users, Settings, Building, MenuSquare, UserCog, UserPlus, Minus, LogOut, CircleUser, AppWindow } from 'lucide-react';
+import { ChevronsUpDown, LogOut, CircleUser } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { menuService } from '@/services/seguridades/menu.service';
@@ -24,6 +24,7 @@ import { serviciosService } from '@/services/seguridades/servicios.service';
 import { useToast } from '@/hooks/use-toast';
 import { environment } from '@/environments/environments.prod';
 import { User } from '@/types/interfaces';
+import { getIcon } from '@/lib/icon-map';
 // (LogoutButton preserved in repo but not used here; we implement custom panel UI)
 
 
@@ -40,17 +41,9 @@ type MenuNode = {
 };
 
 // Mapa de iconos string -> componente Lucide
-const iconMap: Record<string, React.ComponentType<any>> = {
-    Shield,
-    BookUser,
-    Users,
-    Settings,
-    Building,
-    MenuSquare,
-    UserCog,
-    UserPlus,
-    CircleUser,
-    AppWindow,
+// Usando la función getIcon para dinamicidad completa
+const getMenuIcon = (iconName: string): React.ComponentType<any> => {
+    return getIcon(iconName);
 };
 
 // Construir árbol de menú a partir de un array plano basándose en padre-hijo
@@ -164,7 +157,7 @@ function filterActive(nodes: MenuNode[]): MenuNode[] {
 // Transformar árbol backend -> estructura esperada por RecursiveMenu
 function toRecursiveItems(nodes: MenuNode[]): any[] {
     return nodes.map(n => {
-        const IconComp = iconMap[n.icono] || Shield;
+        const IconComp = getMenuIcon(n.icono);
         const hasChildren = !!(n.children && n.children.length);
         // Reglas:
         // '.' => raíz (no navegable)
@@ -412,8 +405,8 @@ function UserPanel() {
                 
                 // Si no hay objeto user, intentar decodificar el JWT como fallback
                 if (!userData) {
-                    const rawToken = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-                    if (rawToken) {
+                    const rawToken = typeof window !== 'undefined' ? localStorage.getItem('auth_token') || localStorage.getItem('token') : null;
+                    if (rawToken && rawToken.startsWith('eyJ')) {
                         const parts = rawToken.split('.');
                         if (parts.length >= 2) {
                             try {
@@ -473,16 +466,21 @@ function UserPanel() {
 
     const handleLogout = () => {
         try {
+            // Limpiar TODOS los datos de sesión
+            localStorage.removeItem('auth_token');
             localStorage.removeItem('token');
             localStorage.removeItem('user');
             localStorage.removeItem('perfiles');
             localStorage.removeItem('appsByProfile');
             localStorage.removeItem('aplicacionesDisponibles');
-            localStorage.removeItem('perfilesAutorizados'); // Limpiar datos antiguos si existen
-            localStorage.clear(); // Eliminar todas las variables de sesión
+            localStorage.removeItem('perfilesAutorizados');
+            
+            console.log('✅ Sesión cerrada - Todos los datos limpios');
         } catch (error) {
             console.error('Error al limpiar localStorage:', error);
         }
+        
+        // Redirigir a login
         const basePath = ((window as any).__NEXT_DATA__?.basePath || process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/+$/, '');
         window.location.href = basePath ? `${basePath}/` : '/';
     };

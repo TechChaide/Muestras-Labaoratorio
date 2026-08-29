@@ -132,3 +132,193 @@ export interface InformacionExterna {
   fecha_modificacion: Date | string;
   usuario_modificacion: string;
 } 
+
+
+///////////////////////////////////////////////////////////////////////////////////////
+
+export interface EnsayoCategoriaEnsayo {
+    codigo_ensayo_categoria_ensayo: number;
+    codigo_solicitud?: number;
+    codigo_muestra?: number;
+    codigo_tipo_ensayo?: number;
+    codigo_formulario?: number;
+    responsable_ensayo?: string;
+    fecha_inicio?: Date;
+    fecha_fin?: Date;
+    fecha_extension?: Date;
+    estado?: string;
+    fecha_creacion?: Date;
+    usuario_creacion?: string;
+}
+
+export interface EnsayoMediciones {
+    codigo_ensayo_modificaciones: number;
+    codigo_tipo_ensayo?: number;
+    codigo_tipo_medicion?: number;
+    numero_tabla?: number;
+    nombre_tabla?: string;
+    identificacion_campo?: number;
+    nombre_campo?: string;
+    mediciones_minimas?: string;
+    estado?: string;
+    fecha_modificacion?: Date;
+    usuario_modificacion?: string;
+}
+
+export interface Familia {
+    codigo_familia: number;
+    nombre_familia?: string;
+    mnemonico?: string;
+    detalle?: string;
+    probetas_minimas?: number;
+    estado?: string;
+    fecha_modificacion?: Date;
+    usuario_modificacion?: string;
+}
+
+export interface Muestra {
+    codigo_muestra: number;
+    codigo_familia_material?: number;
+    nombre_material_muestra: string;
+    area_material?: string;
+    detalle_material?: string;
+    material?: string;
+    lote_serial?: string;
+    fecha_fabricacion?: string; // En el SQL está como varchar(50)
+    fecha_carga?: Date;
+    estado?: string;
+    fecha_creacion?: Date;
+    usuario_creacion?: string;
+}
+
+export interface Resultado {
+    codigo_resultado: number;
+    codigo_ensayo_categoria_ensayo?: number;
+    codigo_celda?: number;
+    fecha_generacion?: Date;
+    toma?: number;
+    valor?: number;
+    resultados?: string;
+    estado?: string;
+    fecha_creacion?: Date;
+    usuario_creacion?: string;
+    codigo_ensayo_modificaciones?: number;
+}
+
+/** Metadatos de plantilla — Logical Model V2 */
+export interface Formulario {
+    codigo_formulario: number;
+    nombre_formulario?: string;
+    version_formulario?: number;
+    estado?: string;
+    fecha_modificacion?: Date | string;
+    usuario_modificacion?: string;
+}
+
+export interface FormularioTabla {
+    codigo_formulario_tabla: number;
+    codigo_formulario?: number;
+    codigo_tabla?: number;
+    cabecera_formulario?: string;
+    posicion?: string;
+    estado?: string;
+    fecha_modificacion?: Date | string;
+    usuario_modificacion?: string;
+}
+
+export interface Tabla {
+    codigo_tabla: number;
+    codigo_tipo_ensayo?: number;
+    nombre_tabla?: string;
+    filas_muestra?: number;
+    numero_columnas?: number;
+    numero_filas_diseno?: number;
+    version?: string;
+    estado?: string;
+    fecha_modificacion?: Date | string;
+    usuario_modificacion?: string;
+}
+
+/** Eje de columna de la grilla (sin jerarquía padre/hijo). */
+export interface Columna {
+    codigo_columna: number;
+    codigo_tabla?: number;
+    indice?: number;
+    nombre_columna?: string;
+    unidades?: string;
+    estado?: string;
+    fecha_modificacion?: Date | string;
+    usuario_modificacion?: string;
+}
+
+export type TipoCelda = "header" | "label" | "input" | "calculated";
+
+/** Celda ancla de la grilla Excel (fusiones vía rowspan/colspan). */
+export interface Celda {
+    codigo_celda: number;
+    codigo_tabla?: number;
+    codigo_columna?: number;
+    fila?: number;
+    col?: number;
+    rowspan?: number;
+    colspan?: number;
+    tipo_celda?: TipoCelda | string;
+    alias?: string;
+    campo_obligatorio?: boolean;
+    estado?: string;
+    fecha_modificacion?: Date | string;
+    usuario_modificacion?: string;
+}
+
+export interface Formula {
+    codigo_formula: number;
+    codigo_celda?: number;
+    nombre?: string;
+    expresion?: string;
+    latex?: string;
+    ambito?: string;
+    estado?: string;
+    fecha_modificacion?: Date | string;
+    usuario_modificacion?: string;
+}
+
+export interface Dependencias {
+    codigo_dependencia: number;
+    codigo_formula?: number;
+    codigo_celda?: number;
+    estado?: string;
+    fecha_modificacion?: Date | string;
+    usuario_modificacion?: string;
+}
+
+export interface Solicitud {
+    codigo_solicitud: number;
+    identificador_ensayo?: string;
+    descripcion?: string;
+    fecha_fab_adq?: Date;
+    correos_objetivo?: string;
+    aceptacion_terminos?: boolean; // Mapeado de bit
+    estado_solicitud?: string;
+    estado?: string;
+    fecha_modificacion?: Date;
+    usuario_mnodificacion?: string;
+}
+
+export interface TipoEnsayo {
+    codigo_tipo_ensayo: number;
+    codigo_familia?: number;
+    nombre_tipo_ensayo?: string;
+    mnemonico?: string;
+    estado?: string;
+    fecha_creacion?: Date;
+    usuario_creacion?: string;
+}
+
+export interface TipoMedicion {
+    codigo_tipo_medicion: number;
+    seccion?: string;
+    nombre_tipo_medicion?: string;
+    estado?: string;
+    fecha_modificacion?: Date;
+    usuario_modificaicon?: string;
+}

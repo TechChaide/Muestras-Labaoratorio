@@ -14,12 +14,20 @@ interface LogoutButtonProps {
 export const LogoutButton: React.FC<LogoutButtonProps> = ({ className, variant = 'gradient', showLabel = true, compact = false }) => {
   const handleLogout = () => {
     try {
+      // Limpiar TODOS los datos de sesión
+      localStorage.removeItem('auth_token');
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      localStorage.clear(); // Eliminar todas las variables de sesión
+      localStorage.removeItem('perfiles');
+      localStorage.removeItem('appsByProfile');
+      localStorage.removeItem('aplicacionesDisponibles');
+      localStorage.removeItem('perfilesAutorizados');
+      
+      console.log('✅ Sesión cerrada - Todos los datos limpios');
     } catch (error) {
       console.error('Error al limpiar localStorage:', error);
     }
+    
     const basePath = ((window as any).__NEXT_DATA__?.basePath || process.env.NEXT_PUBLIC_BASE_PATH || '').replace(/\/+$/, '');
     window.location.href = basePath ? `${basePath}/` : '/';
   };

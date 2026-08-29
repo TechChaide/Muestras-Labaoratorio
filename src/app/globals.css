@@ -77,3 +77,34 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ── Stepper step transition animations ── */
+@keyframes stepEnterForward {
+  from {
+    opacity: 0;
+    transform: translateX(40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes stepEnterBackward {
+  from {
+    opacity: 0;
+    transform: translateX(-40px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.step-enter-forward {
+  animation: stepEnterForward 0.32s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+.step-enter-backward {
+  animation: stepEnterBackward 0.32s cubic-bezier(0.4, 0, 0.2, 1) both;
+}

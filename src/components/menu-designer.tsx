@@ -8,14 +8,13 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import * as LucideIcons from 'lucide-react';
 import { Edit, Trash2, GripVertical, CornerDownRight } from 'lucide-react';
 import { menuService } from '@/services/seguridades/menu.service';
 import { Separator } from '@radix-ui/react-select';
+import { getIcon, availableIcons } from '@/lib/icon-map';
 
 const Icon = ({ name, className }: { name: string; className?: string }) => {
-  const LucideIcon = (LucideIcons as any)[name];
-  if (!LucideIcon) return <LucideIcons.Minus className={className} />;
+  const LucideIcon = getIcon(name);
   return <LucideIcon className={className} />;
 };
 
@@ -30,9 +29,9 @@ function MenuItemForm({ item, parentLabel, onSave, onClose }: MenuItemFormProps)
     const [label, setLabel] = useState(item?.label || '');
     const [path, setPath] = useState(item?.path || '');
     const [icon, setIcon] = useState(item?.icon || 'Minus');
-        const [showInlinePicker, setShowInlinePicker] = useState(false);
-        // Small curated list of common icons for quick selection to avoid rendering issues
-        const commonIcons = ['Home', 'Settings', 'Menu', 'User', 'Users', 'Shield', 'Minus', 'Folder', 'FileText', 'Search', 'PlusCircle'];
+    const [showInlinePicker, setShowInlinePicker] = useState(false);
+    // Lista común de iconos para selección rápida
+    const commonIcons = availableIcons.slice(0, 20);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -78,8 +77,7 @@ function MenuItemForm({ item, parentLabel, onSave, onClose }: MenuItemFormProps)
                     {showInlinePicker && (
                         <div className="mt-2 grid grid-cols-6 gap-2">
                             {commonIcons.map(name => {
-                                const Comp = (LucideIcons as any)[name];
-                                if (!Comp) return null;
+                                const Comp = getIcon(name);
                                 return (
                                     <button key={name} type="button" onClick={() => { setIcon(name); setShowInlinePicker(false); }} className="flex flex-col items-center gap-1 p-2 rounded hover:bg-primary/5">
                                         <div className="p-1 border rounded bg-white/5"><Comp className="h-5 w-5" /></div>
