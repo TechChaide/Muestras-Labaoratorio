@@ -32,7 +32,6 @@ const formSchema = z.object({
     nombre_familia: z.string().min(1, "El nombre de la familia es requerido."),
     mnemonico: z.string().min(1, "El mnemónico es requerido."),
     detalle: z.string().optional(),
-    probetas_minimas: z.number().min(0, "Las probetas no pueden ser negativas.").optional(),
     estado: z.string({ required_error: "El estado es requerido." }),
 });
 
@@ -53,7 +52,6 @@ export default function FamiliaForm({ record, onSuccess, onCancel }: FamiliaForm
             nombre_familia: record?.nombre_familia ?? '',
             mnemonico: record?.mnemonico ?? '',
             detalle: record?.detalle ?? '',
-            probetas_minimas: record?.probetas_minimas ?? 0,
             estado: record?.estado ?? 'A',
         },
     });
@@ -66,7 +64,6 @@ export default function FamiliaForm({ record, onSuccess, onCancel }: FamiliaForm
             nombre_familia: values.nombre_familia,
             mnemonico: values.mnemonico.toUpperCase(),
             detalle: values.detalle || '',
-            probetas_minimas: values.probetas_minimas || 0,
             estado: values.estado,
         };
 
@@ -121,25 +118,6 @@ export default function FamiliaForm({ record, onSuccess, onCancel }: FamiliaForm
                                             placeholder="Ej: ACERO_INX" 
                                             {...field}
                                             onChange={(e) => field.onChange(e.target.value.toUpperCase())}
-                                        />
-                                    </FormControl>
-                                    <FormMessage />
-                                </FormItem>
-                            )}
-                        />
-                        <FormField
-                            control={form.control}
-                            name="probetas_minimas"
-                            render={({ field }) => (
-                                <FormItem>
-                                    <FormLabel>Probetas Mínimas</FormLabel>
-                                    <FormControl>
-                                        <Input 
-                                            type="number" 
-                                            min="0" 
-                                            placeholder="Ej: 3" 
-                                            {...field}
-                                            onChange={(e) => field.onChange(Number(e.target.value))}
                                         />
                                     </FormControl>
                                     <FormMessage />

@@ -33,6 +33,7 @@ const formSchema = z.object({
     codigo_familia: z.number().optional(),
     nombre_tipo_ensayo: z.string().min(1, "El nombre del tipo de ensayo es requerido."),
     mnemonico: z.string().max(10, "Máximo 10 caracteres.").optional(),
+    probetas_minimas: z.number().min(0, "Las probetas no pueden ser negativas.").optional(),
     estado: z.string({ required_error: "El estado es requerido." }),
 });
 
@@ -78,6 +79,7 @@ export default function TipoEnsayoForm({ record, onSuccess, onCancel }: TipoEnsa
             codigo_familia: record?.codigo_familia ?? undefined,
             nombre_tipo_ensayo: record?.nombre_tipo_ensayo ?? '',
             mnemonico: record?.mnemonico ?? '',
+            probetas_minimas: record?.probetas_minimas ?? 0,
             estado: record?.estado ?? 'A',
         },
     });
@@ -88,6 +90,7 @@ export default function TipoEnsayoForm({ record, onSuccess, onCancel }: TipoEnsa
             codigo_familia: record?.codigo_familia ?? undefined,
             nombre_tipo_ensayo: record?.nombre_tipo_ensayo ?? '',
             mnemonico: record?.mnemonico ?? '',
+            probetas_minimas: record?.probetas_minimas ?? 0,
             estado: record?.estado ?? 'A',
         });
     }, [record, form]);
@@ -100,6 +103,7 @@ export default function TipoEnsayoForm({ record, onSuccess, onCancel }: TipoEnsa
             codigo_familia: values.codigo_familia || undefined,
             nombre_tipo_ensayo: values.nombre_tipo_ensayo,
             mnemonico: (values.mnemonico || '').toUpperCase(),
+            probetas_minimas: values.probetas_minimas || 0,
             estado: values.estado,
         };
 
@@ -182,6 +186,25 @@ export default function TipoEnsayoForm({ record, onSuccess, onCancel }: TipoEnsa
                                             ))}
                                         </SelectContent>
                                     </Select>
+                                    <FormMessage />
+                                </FormItem>
+                            )}
+                        />
+                        <FormField
+                            control={form.control}
+                            name="probetas_minimas"
+                            render={({ field }) => (
+                                <FormItem>
+                                    <FormLabel>Probetas Mínimas</FormLabel>
+                                    <FormControl>
+                                        <Input
+                                            type="number"
+                                            min="0"
+                                            placeholder="Ej: 3"
+                                            {...field}
+                                            onChange={(e) => field.onChange(Number(e.target.value))}
+                                        />
+                                    </FormControl>
                                     <FormMessage />
                                 </FormItem>
                             )}

@@ -33,6 +33,7 @@ export default function TablaList({ tablas, tiposEnsayo, isLoading, onEdit, onAd
     return tablas.filter(
       (t) =>
         (t.nombre_tabla || "").toLowerCase().includes(f) ||
+        (t.tipo_tabla || "").toLowerCase().includes(f) ||
         nombreTipo(t.codigo_tipo_ensayo).toLowerCase().includes(f)
     );
   }, [tablas, filter, tiposEnsayo]);
@@ -42,7 +43,10 @@ export default function TablaList({ tablas, tiposEnsayo, isLoading, onEdit, onAd
       <CardHeader className="flex flex-row items-center justify-between">
         <div>
           <CardTitle>Tablas definidas</CardTitle>
-          <CardDescription>Selecciona una tabla para editar su estructura interna.</CardDescription>
+          <CardDescription>
+            Modificar una tabla crea una nueva versión; la anterior queda inactiva y los formularios
+            vinculados deben actualizarse.
+          </CardDescription>
         </div>
         <Button onClick={onAddNew}>
           <Plus className="mr-2 h-4 w-4" />
@@ -52,7 +56,7 @@ export default function TablaList({ tablas, tiposEnsayo, isLoading, onEdit, onAd
       <CardContent>
         <div className="mb-4">
           <Input
-            placeholder="Filtrar por nombre o tipo de ensayo..."
+            placeholder="Filtrar por nombre, tipo de tabla o ensayo..."
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             className="max-w-sm"
@@ -64,9 +68,11 @@ export default function TablaList({ tablas, tiposEnsayo, isLoading, onEdit, onAd
               <TableRow>
                 <TableHead>Código</TableHead>
                 <TableHead>Nombre</TableHead>
+                <TableHead>Tipo tabla</TableHead>
                 <TableHead>Tipo ensayo</TableHead>
                 <TableHead>Filas</TableHead>
                 <TableHead>Cols</TableHead>
+                <TableHead>Versión</TableHead>
                 <TableHead>Estado</TableHead>
                 <TableHead className="text-right">Acciones</TableHead>
               </TableRow>
@@ -75,7 +81,7 @@ export default function TablaList({ tablas, tiposEnsayo, isLoading, onEdit, onAd
               {isLoading
                 ? [...Array(4)].map((_, i) => (
                     <TableRow key={i}>
-                      <TableCell colSpan={7}>
+                      <TableCell colSpan={9}>
                         <Skeleton className="h-6 w-full" />
                       </TableCell>
                     </TableRow>
@@ -84,9 +90,11 @@ export default function TablaList({ tablas, tiposEnsayo, isLoading, onEdit, onAd
                     <TableRow key={t.codigo_tabla}>
                       <TableCell>{t.codigo_tabla}</TableCell>
                       <TableCell className="font-medium">{t.nombre_tabla}</TableCell>
+                      <TableCell>{t.tipo_tabla || "—"}</TableCell>
                       <TableCell>{nombreTipo(t.codigo_tipo_ensayo)}</TableCell>
                       <TableCell>{t.filas_muestra}</TableCell>
                       <TableCell>{t.numero_columnas ?? "—"}</TableCell>
+                      <TableCell>v{t.version || "1"}</TableCell>
                       <TableCell>
                         <Badge
                           variant={t.estado === "A" ? "default" : "destructive"}
@@ -96,16 +104,26 @@ export default function TablaList({ tablas, tiposEnsayo, isLoading, onEdit, onAd
                         </Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button variant="outline" size="sm" onClick={() => onEdit(t)}>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => onEdit(t)}
+                          disabled={t.estado === "I"}
+                          title={
+                            t.estado === "I"
+                              ? "Solo se puede crear nueva versión desde tablas activas"
+                              : undefined
+                          }
+                        >
                           <Edit className="mr-2 h-4 w-4" />
-                          Editar estructura
+                          Nueva versión
                         </Button>
                       </TableCell>
                     </TableRow>
                   ))}
               {!isLoading && filtered.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="h-24 text-center">
+                  <TableCell colSpan={9} className="h-24 text-center">
                     No hay tablas. Crea la primera para definir la grilla.
                   </TableCell>
                 </TableRow>

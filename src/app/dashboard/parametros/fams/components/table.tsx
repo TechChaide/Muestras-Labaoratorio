@@ -62,7 +62,6 @@ export default function FamiliasTable({ records, isLoading, onEdit, onAddNew }: 
             <TableCell><Skeleton className="h-4 w-12" /></TableCell>
             <TableCell><Skeleton className="h-4 w-40" /></TableCell>
             <TableCell><Skeleton className="h-4 w-24" /></TableCell>
-            <TableCell><Skeleton className="h-4 w-12" /></TableCell>
             <TableCell><Skeleton className="h-6 w-16 rounded-full" /></TableCell>
             <TableCell className="text-right"><Skeleton className="h-8 w-8" /></TableCell>
         </TableRow>
@@ -102,7 +101,6 @@ export default function FamiliasTable({ records, isLoading, onEdit, onAddNew }: 
                     <TableHead>Código</TableHead>
                     <TableHead>Nombre</TableHead>
                     <TableHead>Mnemónico</TableHead>
-                    <TableHead>Probetas Mín.</TableHead>
                     <TableHead>Estado</TableHead>
                     <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
@@ -113,7 +111,6 @@ export default function FamiliasTable({ records, isLoading, onEdit, onAddNew }: 
                     <TableCell className="font-medium">{record.codigo_familia}</TableCell>
                     <TableCell>{record.nombre_familia}</TableCell>
                     <TableCell className="font-mono text-sm">{record.mnemonico}</TableCell>
-                    <TableCell>{record.probetas_minimas || 0}</TableCell>
                     <TableCell>
                         <Badge variant={record.estado === 'A' ? 'default' : 'destructive'} className={record.estado === 'A' ? 'bg-green-600' : ''}>
                          {record.estado === 'A' ? 'Activo' : 'Inactivo'}
@@ -139,7 +136,7 @@ export default function FamiliasTable({ records, isLoading, onEdit, onAddNew }: 
                 ))}
                  {!isLoading && paginatedRecords.length === 0 && (
                     <TableRow>
-                        <TableCell colSpan={6} className="h-24 text-center">
+                        <TableCell colSpan={5} className="h-24 text-center">
                             No se encontraron familias.
                         </TableCell>
                     </TableRow>

@@ -87,6 +87,7 @@ export default function TipoEnsayoTable({ records, isLoading, onEdit, onAddNew }
             <TableCell><Skeleton className="h-4 w-40" /></TableCell>
             <TableCell><Skeleton className="h-4 w-16" /></TableCell>
             <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+            <TableCell><Skeleton className="h-4 w-12" /></TableCell>
             <TableCell><Skeleton className="h-6 w-16 rounded-full" /></TableCell>
             <TableCell className="text-right"><Skeleton className="h-8 w-8" /></TableCell>
         </TableRow>
@@ -126,6 +127,7 @@ export default function TipoEnsayoTable({ records, isLoading, onEdit, onAddNew }
                         <TableHead>Nombre</TableHead>
                         <TableHead>Mnemónico</TableHead>
                         <TableHead>Familia</TableHead>
+                        <TableHead>Probetas Mín.</TableHead>
                         <TableHead>Estado</TableHead>
                         <TableHead className="text-right">Acciones</TableHead>
                     </TableRow>
@@ -142,6 +144,7 @@ export default function TipoEnsayoTable({ records, isLoading, onEdit, onAddNew }
                                       : <span className="text-muted-foreground">—</span>}
                                 </TableCell>
                                 <TableCell>{getFamiliaName(record.codigo_familia)}</TableCell>
+                                <TableCell>{record.probetas_minimas || 0}</TableCell>
                                 <TableCell>
                                     <Badge variant={record.estado === 'A' ? 'default' : 'secondary'}>
                                         {record.estado === 'A' ? 'Activo' : 'Inactivo'}
@@ -166,7 +169,7 @@ export default function TipoEnsayoTable({ records, isLoading, onEdit, onAddNew }
                         ))
                     ) : (
                         <TableRow>
-                            <TableCell colSpan={6} className="text-center py-4 text-muted-foreground">
+                            <TableCell colSpan={7} className="text-center py-4 text-muted-foreground">
                                 No hay registros que mostrar
                             </TableCell>
                         </TableRow>

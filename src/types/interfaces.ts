@@ -170,7 +170,6 @@ export interface Familia {
     nombre_familia?: string;
     mnemonico?: string;
     detalle?: string;
-    probetas_minimas?: number;
     estado?: string;
     fecha_modificacion?: Date;
     usuario_modificacion?: string;
@@ -230,6 +229,7 @@ export interface Tabla {
     codigo_tabla: number;
     codigo_tipo_ensayo?: number;
     nombre_tabla?: string;
+    tipo_tabla?: string;
     filas_muestra?: number;
     numero_columnas?: number;
     numero_filas_diseno?: number;
@@ -309,6 +309,7 @@ export interface TipoEnsayo {
     codigo_familia?: number;
     nombre_tipo_ensayo?: string;
     mnemonico?: string;
+    probetas_minimas?: number;
     estado?: string;
     fecha_creacion?: Date;
     usuario_creacion?: string;

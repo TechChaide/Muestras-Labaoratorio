@@ -87,9 +87,7 @@ export default function FormulariosPage() {
         <CardContent>
           <p>
             Un formulario es la unión ordenada de tablas ya diseñadas. Compón
-            secciones, define cabeceras y prepara el documento que usará el
-            ensayo. Las fórmulas pueden leer valores de otras tablas del mismo
-            formulario mediante alias cualificados (
+            secciones y define aquí las fórmulas con referencias entre tablas (
             <code className="text-sm bg-muted px-1 rounded">T{"{id}"}.alias</code>
             ).
           </p>

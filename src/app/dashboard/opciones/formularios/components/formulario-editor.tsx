@@ -5,6 +5,7 @@ import type {
   Formulario,
   FormularioTabla,
   Tabla,
+  Columna,
 } from "@/types/interfaces";
 import { formularioService } from "@/services/muestrasLaboratorio/formulario.service";
 import { formularioTablaService } from "@/services/muestrasLaboratorio/formularioTabla.service";
@@ -29,6 +30,7 @@ import {
 import {
   ArrowDown,
   ArrowUp,
+  AlertTriangle,
   Info,
   Plus,
   Save,
@@ -36,6 +38,16 @@ import {
   X,
 } from "lucide-react";
 import FormularioPreview from "./formulario-preview";
+import FormularioFormulaPanel from "./formulario-formula-panel";
+import { formatTablaLabel } from "@/lib/tabla-version";
+import {
+  loadFormFormulaContext,
+  saveFormFormulaDrafts,
+  validateFormulaDrafts,
+  type FormCellSnapshot,
+  type FormulaDraft,
+} from "@/lib/formula/formula-persistence";
+import { cn } from "@/lib/utils";
 
 interface SectionLocal {
   _localId: string;
@@ -78,8 +90,67 @@ export default function FormularioEditor({
   const [estado, setEstado] = useState(formulario?.estado || "A");
   const [sections, setSections] = useState<SectionLocal[]>([]);
   const [isSaving, setIsSaving] = useState(false);
+  const [formulaDrafts, setFormulaDrafts] = useState<FormulaDraft[]>([]);
+  const [formulaCells, setFormulaCells] = useState<FormCellSnapshot[]>([]);
+  const [formulaRefMap, setFormulaRefMap] = useState<Map<string, number>>(new Map());
+  const [formulaColumnsByTable, setFormulaColumnsByTable] = useState<Map<number, Columna[]>>(
+    new Map()
+  );
+  const [formulaLoading, setFormulaLoading] = useState(false);
 
   const baselineLinkIds = useRef<number[]>([]);
+
+  const tableIdsKey = useMemo(
+    () =>
+      sections
+        .map((s) => s.codigo_tabla)
+        .filter((id): id is number => !!id)
+        .join(","),
+    [sections]
+  );
+
+  const tableIds = useMemo(
+    () =>
+      sections
+        .map((s) => s.codigo_tabla)
+        .filter((id): id is number => !!id),
+    [sections]
+  );
+
+  useEffect(() => {
+    if (tableIds.length === 0) {
+      setFormulaDrafts([]);
+      setFormulaCells([]);
+      setFormulaRefMap(new Map());
+      setFormulaColumnsByTable(new Map());
+      return;
+    }
+    let cancelled = false;
+    setFormulaLoading(true);
+    loadFormFormulaContext(tableIds)
+      .then((ctx) => {
+        if (cancelled) return;
+        setFormulaDrafts(ctx.drafts);
+        setFormulaCells(ctx.cells);
+        setFormulaRefMap(ctx.refMap);
+        setFormulaColumnsByTable(ctx.columnsByTable);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          toast({
+            title: "Error",
+            description: "No se pudieron cargar las fórmulas del formulario.",
+            variant: "destructive",
+          });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setFormulaLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tableIdsKey, toast]);
 
   useEffect(() => {
     if (!formulario?.codigo_formulario) {
@@ -109,14 +180,20 @@ export default function FormularioEditor({
     );
   }, [formulario, existingLinks]);
 
-  const tablasActivas = useMemo(
-    () => tablas.filter((t) => (t.estado || "A") !== "I"),
-    [tablas]
-  );
 
   const tablasUsadas = useMemo(
     () => new Set(sections.map((s) => s.codigo_tabla).filter(Boolean) as number[]),
     [sections]
+  );
+
+  const seccionesConTablaObsoleta = useMemo(
+    () =>
+      sections.filter((sec) => {
+        if (!sec.codigo_tabla) return false;
+        const t = tablas.find((x) => x.codigo_tabla === sec.codigo_tabla);
+        return !!t && t.estado === "I";
+      }),
+    [sections, tablas]
   );
 
   const addSection = () => {
@@ -189,6 +266,20 @@ export default function FormularioEditor({
       return;
     }
 
+    const formulaIssues = validateFormulaDrafts(
+      formulaDrafts,
+      formulaRefMap,
+      formulaCells
+    );
+    if (formulaIssues.length > 0) {
+      toast({
+        title: "Fórmulas incompletas o inválidas",
+        description: formulaIssues[0].message,
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsSaving(true);
     try {
       const versionNum = Number(version) || 1;
@@ -227,11 +318,13 @@ export default function FormularioEditor({
         });
       }
 
+      await saveFormFormulaDrafts(tableIds, formulaDrafts);
+
       toast({
         title: "Guardado",
         description: isEdit
-          ? `Formulario "${nombre.trim()}" actualizado.`
-          : `Formulario "${nombre.trim()}" creado con ${sections.length} tabla(s).`,
+          ? `Formulario "${nombre.trim()}" actualizado con fórmulas.`
+          : `Formulario "${nombre.trim()}" creado con ${sections.length} tabla(s) y fórmulas.`,
       });
       onSuccess();
     } catch (error) {
@@ -253,10 +346,32 @@ export default function FormularioEditor({
     isEdit,
     onSuccess,
     toast,
+    formulaDrafts,
+    formulaRefMap,
+    formulaCells,
+    tableIds,
   ]);
 
   return (
     <div className="flex flex-col gap-4">
+      {seccionesConTablaObsoleta.length > 0 && (
+        <div className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-950 flex gap-3">
+          <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5" />
+          <div>
+            <p className="font-medium">Formulario con tablas obsoletas</p>
+            <p className="mt-1">
+              {seccionesConTablaObsoleta.length === 1
+                ? "Una sección usa una tabla inactiva"
+                : `${seccionesConTablaObsoleta.length} secciones usan tablas inactivas`}
+              {" "}
+              (versión anterior reemplazada en el Editor de Tablas). Este formulario{" "}
+              <strong>no es válido</strong> hasta que selecciones la nueva versión activa de cada
+              tabla y vuelvas a definir las fórmulas.
+            </p>
+          </div>
+        </div>
+      )}
+
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-4">
           <div>
@@ -264,10 +379,9 @@ export default function FormularioEditor({
               {isEdit ? "Editar formulario" : "Nuevo formulario"}
             </CardTitle>
             <CardDescription>
-              Une tablas en secciones ordenadas. En fórmulas cross-table usa
-              refs cualificadas{" "}
-              <code className="text-xs bg-muted px-1 rounded">T12.A1</code>{" "}
-              (prefijo = código de tabla).
+              Une tablas en secciones ordenadas. Las fórmulas se definen aquí con
+              referencias entre tablas (
+              <code className="text-xs bg-muted px-1 rounded">T12.A1</code>).
             </CardDescription>
           </div>
           <div className="flex gap-2 shrink-0">
@@ -338,15 +452,25 @@ export default function FormularioEditor({
               </p>
             )}
             {sections.map((sec, idx) => {
-              const disponibles = tablasActivas.filter(
-                (t) =>
-                  t.codigo_tabla === sec.codigo_tabla ||
-                  !tablasUsadas.has(t.codigo_tabla)
-              );
+              const tablaSec = tablas.find((t) => t.codigo_tabla === sec.codigo_tabla);
+              const tablaObsoleta = !!tablaSec && tablaSec.estado === "I";
+              const disponibles = tablas
+                .filter(
+                  (t) =>
+                    (t.estado || "A") !== "I" || t.codigo_tabla === sec.codigo_tabla
+                )
+                .filter(
+                  (t) =>
+                    t.codigo_tabla === sec.codigo_tabla ||
+                    !tablasUsadas.has(t.codigo_tabla)
+                );
               return (
                 <div
                   key={sec._localId}
-                  className="border rounded-md p-3 space-y-3 bg-card"
+                  className={cn(
+                    "border rounded-md p-3 space-y-3 bg-card",
+                    tablaObsoleta && "border-red-300 bg-red-50/40"
+                  )}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-mono text-muted-foreground">
@@ -386,6 +510,12 @@ export default function FormularioEditor({
                   </div>
                   <div className="space-y-2">
                     <Label>Tabla</Label>
+                    {tablaObsoleta && (
+                      <p className="text-xs text-red-700 flex items-start gap-1.5">
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
+                        Tabla inactiva — elige la versión activa más reciente con el mismo nombre.
+                      </p>
+                    )}
                     <Select
                       value={
                         sec.codigo_tabla != null
@@ -407,10 +537,8 @@ export default function FormularioEditor({
                             key={t.codigo_tabla}
                             value={String(t.codigo_tabla)}
                           >
-                            #{t.codigo_tabla} — {t.nombre_tabla || "Sin nombre"}
-                            {t.codigo_tabla
-                              ? ` (T${t.codigo_tabla}.*)`
-                              : ""}
+                            {formatTablaLabel(t)}
+                            {t.codigo_tabla ? ` (T${t.codigo_tabla}.*)` : ""}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -434,20 +562,12 @@ export default function FormularioEditor({
 
             <div className="flex gap-2 rounded-md border border-violet-200 bg-violet-50/60 p-3 text-xs text-violet-950">
               <Info className="h-4 w-4 shrink-0 mt-0.5" />
-              <div className="space-y-1">
-                <p className="font-medium">Referencias entre tablas</p>
-                <p>
-                  El modelo V2 permite que una fórmula dependa de{" "}
-                  <code className="bg-white/70 px-1 rounded">codigo_celda</code>{" "}
-                  de otra tabla (vía{" "}
-                  <code className="bg-white/70 px-1 rounded">dependencias</code>
-                  ). En la expresión usa el alias cualificado, p. ej.{" "}
-                  <code className="bg-white/70 px-1 rounded">
-                    (T3.ei - T3.ef) / (T3.ei * T5.k) * 100
-                  </code>
-                  .
-                </p>
-              </div>
+              <p>
+                Si modificas una tabla en el <strong>Editor de Tablas</strong>, se crea una nueva
+                versión y la anterior queda inactiva. Debes volver aquí, reemplazar la tabla en cada
+                sección y redefinir las fórmulas. Marca celdas como{" "}
+                <strong>Calculada</strong> en la tabla y asigna alias antes de escribir expresiones.
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -456,8 +576,7 @@ export default function FormularioEditor({
           <CardHeader>
             <CardTitle className="text-base">Vista previa</CardTitle>
             <CardDescription>
-              Orden de secciones como se verá al capturar el ensayo. Hover en
-              celdas muestra el alias cualificado.
+              Orden de secciones como se verá al capturar el ensayo.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -465,6 +584,22 @@ export default function FormularioEditor({
           </CardContent>
         </Card>
       </div>
+
+      <FormularioFormulaPanel
+        tableIds={tableIds}
+        tablas={tablas}
+        sectionOrder={sections
+          .filter((s) => s.codigo_tabla)
+          .map((s) => ({
+            codigo_tabla: s.codigo_tabla!,
+            cabecera: s.cabecera,
+          }))}
+        cells={formulaCells}
+        columnsByTable={formulaColumnsByTable}
+        drafts={formulaDrafts}
+        onDraftsChange={setFormulaDrafts}
+        isLoading={formulaLoading}
+      />
     </div>
   );
 }
