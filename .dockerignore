@@ -1,0 +1,19 @@
+node_modules
+.next
+.git
+.gitignore
+*.md
+.env*
+!.env.example
+tsconfig.tsbuildinfo
+.idx
+referencias codigo
+certs
+instrucciones.txt
+Dockerfile
+docker-compose.yml
+.dockerignore
+**/*.log
+.DS_Store
+Thumbs.db
+*.bak

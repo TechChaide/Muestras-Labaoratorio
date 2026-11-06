@@ -18,7 +18,7 @@ export {
   MATH_TEMPLATES,
 } from "./types";
 export { tokenize } from "./tokenize";
-export { parseExpression } from "./parse";
+export { parseExpression, looksLikeLatex } from "./parse";
 export { evaluateAst } from "./evaluate";
 export { astToLatex } from "./toLatex";
 export { formulaApi } from "./calc-api";
@@ -28,8 +28,9 @@ export {
   qualifyAlias,
   parseQualifiedRef,
   isCrossTableRef,
+  rewriteTableRefsInExpression,
 } from "./cross-table";
-export { colLetter, cellPositionRef } from "./grid-utils";
+export { colLetter, cellPositionRef, letterToCol, shiftRefsInExpression, computeAutofillShift, parseGroupAlias, tomaDeCelda, parseValorNumerico } from "./grid-utils";
 export type {
   FormCellSnapshot,
   FormulaDraft,
@@ -39,10 +40,17 @@ export type {
 export {
   buildRefMap,
   resolveRefToCell,
+  resolveRefDetailed,
   cellRefToken,
+  bindLiveFormulas,
   validateFormulaDrafts,
   loadFormFormulaContext,
   saveFormFormulaDrafts,
   purgeOrphanFormulasForTable,
+  migrateFormulasOnTableReplace,
+  rewriteTableRefsInDrafts,
+  healStaleTableRefsInDrafts,
   tableDisplayName,
+  isFormulaEligible,
 } from "./formula-persistence";
+export type { ResolveRefOutcome } from "./formula-persistence";

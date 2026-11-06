@@ -6,3 +6,10 @@ out/
 .env.local
 .vscode/
 package-lock.json
+
+# Subidas en desarrollo local (imágenes de celdas / plantillas de informes).
+# En producción esta carpeta la sobrescribe el volumen de docker-compose
+# apuntando al recurso compartido de Windows — acá en dev es solo la carpeta
+# real del proyecto, y no queremos commitear archivos de prueba.
+public/uploads/
+public/plantillas/

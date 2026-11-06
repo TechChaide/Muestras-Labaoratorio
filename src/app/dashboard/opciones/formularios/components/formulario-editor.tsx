@@ -5,6 +5,8 @@ import type {
   Formulario,
   FormularioTabla,
   Tabla,
+  TipoEnsayo,
+  Familia,
   Columna,
 } from "@/types/interfaces";
 import { formularioService } from "@/services/muestrasLaboratorio/formulario.service";
@@ -39,15 +41,28 @@ import {
 } from "lucide-react";
 import FormularioPreview from "./formulario-preview";
 import FormularioFormulaPanel from "./formulario-formula-panel";
-import { formatTablaLabel } from "@/lib/tabla-version";
+import { TablaCombobox } from "./tabla-combobox";
 import {
   loadFormFormulaContext,
   saveFormFormulaDrafts,
   validateFormulaDrafts,
+  migrateFormulasOnTableReplace,
+  healStaleTableRefsInDrafts,
   type FormCellSnapshot,
   type FormulaDraft,
 } from "@/lib/formula/formula-persistence";
 import { cn } from "@/lib/utils";
+import { bumpVersion, fingerprintTablasFormulario } from "@/lib/tabla-version";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface SectionLocal {
   _localId: string;
@@ -61,6 +76,8 @@ interface SectionLocal {
 interface Props {
   formulario: Formulario | null;
   tablas: Tabla[];
+  tiposEnsayo: TipoEnsayo[];
+  familias: Familia[];
   existingLinks: FormularioTabla[];
   onSuccess: () => void;
   onCancel: () => void;
@@ -74,6 +91,8 @@ const uid = () =>
 export default function FormularioEditor({
   formulario,
   tablas,
+  tiposEnsayo,
+  familias,
   existingLinks,
   onSuccess,
   onCancel,
@@ -97,8 +116,113 @@ export default function FormularioEditor({
     new Map()
   );
   const [formulaLoading, setFormulaLoading] = useState(false);
+  const [formulasDirty, setFormulasDirty] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [pendingTableChange, setPendingTableChange] = useState<{
+    localId: string;
+    codigoTabla: number | undefined;
+  } | null>(null);
+  const [pendingRemoveSection, setPendingRemoveSection] = useState<string | null>(null);
+  const [cloneConfirmOpen, setCloneConfirmOpen] = useState(false);
 
   const baselineLinkIds = useRef<number[]>([]);
+  const baselineTablasRef = useRef("");
+  const metaBaselineRef = useRef({
+    nombre: formulario?.nombre_formulario || "",
+    version:
+      formulario?.version_formulario != null ? String(formulario.version_formulario) : "1",
+    estado: formulario?.estado || "A",
+    sectionsKey: "",
+  });
+
+  const sectionsKey = useMemo(
+    () =>
+      sections
+        .map((s) => `${s.codigo_tabla ?? ""}:${s.cabecera}:${s.posicion}`)
+        .join("|"),
+    [sections]
+  );
+
+  useEffect(() => {
+    if (!formulario?.codigo_formulario && sections.length === 0) {
+      metaBaselineRef.current.sectionsKey = "";
+      return;
+    }
+    // Tras cargar secciones de un formulario existente, fijar baseline una vez.
+    if (formulario?.codigo_formulario && metaBaselineRef.current.sectionsKey === "" && sections.length > 0) {
+      metaBaselineRef.current.sectionsKey = sections
+        .map((s) => `${s.codigo_tabla ?? ""}:${s.cabecera}:${s.posicion}`)
+        .join("|");
+    }
+  }, [formulario, sections]);
+
+  const metaDirty = useMemo(() => {
+    const b = metaBaselineRef.current;
+    return (
+      nombre !== b.nombre ||
+      version !== b.version ||
+      estado !== b.estado ||
+      (b.sectionsKey !== "" && sectionsKey !== b.sectionsKey) ||
+      (!formulario?.codigo_formulario && (nombre.trim() !== "" || sections.length > 0))
+    );
+  }, [nombre, version, estado, sectionsKey, sections.length, formulario]);
+
+  const anyDirty = metaDirty || formulasDirty;
+
+  const requestCancel = () => {
+    if (anyDirty) setCancelOpen(true);
+    else onCancel();
+  };
+
+  const requestTableChange = (localId: string, codigoTabla: number | undefined) => {
+    if (formulasDirty) {
+      setPendingTableChange({ localId, codigoTabla });
+      return;
+    }
+    void applyTableChange(localId, codigoTabla);
+  };
+
+  /** Cambia la tabla de una sección y, si había otra, migra fórmulas + refs T{old}→T{new}. */
+  const applyTableChange = async (localId: string, codigoTabla: number | undefined) => {
+    const sec = sections.find((s) => s._localId === localId);
+    const fromId = sec?.codigo_tabla;
+    const toId = codigoTabla;
+
+    if (fromId && toId && fromId !== toId) {
+      const nextTableIds = sections
+        .map((s) => (s._localId === localId ? toId : s.codigo_tabla))
+        .filter((id): id is number => !!id);
+      try {
+        const result = await migrateFormulasOnTableReplace(fromId, toId, nextTableIds);
+        if (result.copied > 0 || result.rewritten > 0) {
+          toast({
+            title: "Fórmulas migradas",
+            description: `Se actualizaron referencias T${fromId}.* → T${toId}.* (${result.copied} copiadas, ${result.rewritten} reescritas).`,
+            variant: "success",
+          });
+        }
+      } catch (err) {
+        toast({
+          title: "No se pudieron migrar las fórmulas",
+          description:
+            err instanceof Error
+              ? err.message
+              : "Revisa las referencias T{id} manualmente tras guardar.",
+          variant: "destructive",
+        });
+      }
+    }
+
+    updateSection(localId, { codigo_tabla: codigoTabla });
+  };
+
+  const requestRemoveSection = (localId: string) => {
+    if (formulasDirty) {
+      setPendingRemoveSection(localId);
+      return;
+    }
+    removeSection(localId);
+  };
 
   const tableIdsKey = useMemo(
     () =>
@@ -130,10 +254,20 @@ export default function FormularioEditor({
     loadFormFormulaContext(tableIds)
       .then((ctx) => {
         if (cancelled) return;
-        setFormulaDrafts(ctx.drafts);
+        const healed = healStaleTableRefsInDrafts(ctx.drafts, tableIds, tablas);
+        setFormulaDrafts(healed.drafts);
         setFormulaCells(ctx.cells);
         setFormulaRefMap(ctx.refMap);
         setFormulaColumnsByTable(ctx.columnsByTable);
+        if (healed.remaps.length > 0) {
+          toast({
+            title: "Referencias actualizadas",
+            description: healed.remaps
+              .map((r) => `T${r.from}.* → T${r.to}.*`)
+              .join(", "),
+            variant: "success",
+          });
+        }
       })
       .catch(() => {
         if (!cancelled) {
@@ -150,7 +284,7 @@ export default function FormularioEditor({
     return () => {
       cancelled = true;
     };
-  }, [tableIdsKey, toast]);
+  }, [tableIdsKey, toast, tablas, tableIds]);
 
   useEffect(() => {
     if (!formulario?.codigo_formulario) {
@@ -168,6 +302,7 @@ export default function FormularioEditor({
     baselineLinkIds.current = mine
       .map((l) => l.codigo_formulario_tabla)
       .filter((id): id is number => id != null);
+    baselineTablasRef.current = fingerprintTablasFormulario(mine);
     setSections(
       mine.map((l, i) => ({
         _localId: uid(),
@@ -195,6 +330,14 @@ export default function FormularioEditor({
       }),
     [sections, tablas]
   );
+
+  const tablesChanged =
+    isEdit &&
+    baselineTablasRef.current !== "" &&
+    fingerprintTablasFormulario(sections) !== baselineTablasRef.current;
+  const versionNueva = tablesChanged
+    ? bumpVersion(formulario?.version_formulario)
+    : version;
 
   const addSection = () => {
     setSections((prev) => [
@@ -282,34 +425,51 @@ export default function FormularioEditor({
 
     setIsSaving(true);
     try {
-      const versionNum = Number(version) || 1;
+      const crearNuevaVersion = tablesChanged;
+      const versionNum = crearNuevaVersion
+        ? Number(bumpVersion(formulario?.version_formulario)) || 1
+        : Number(version) || 1;
+
       const fSaved = await formularioService.save({
-        codigo_formulario: formulario?.codigo_formulario || 0,
+        codigo_formulario: crearNuevaVersion ? 0 : formulario?.codigo_formulario || 0,
         nombre_formulario: nombre.trim(),
         version_formulario: versionNum,
-        estado,
+        estado: crearNuevaVersion ? "A" : estado,
       });
       const codigoFormulario =
         (fSaved.data as Formulario)?.codigo_formulario ||
-        formulario?.codigo_formulario;
+        (!crearNuevaVersion ? formulario?.codigo_formulario : undefined);
       if (!codigoFormulario) {
         throw new Error("No se obtuvo codigo_formulario del backend.");
       }
 
-      const keepIds = new Set(
-        sections
-          .map((s) => s.codigo_formulario_tabla)
-          .filter((id): id is number => !!id)
-      );
-      for (const oldId of baselineLinkIds.current) {
-        if (!keepIds.has(oldId)) {
-          await formularioTablaService.delete(oldId);
+      if (crearNuevaVersion && formulario?.codigo_formulario) {
+        try {
+          await formularioService.save({
+            ...formulario,
+            estado: "I",
+          });
+        } catch {
+          /* la versión nueva ya existe; el viejo puede quedar activo */
+        }
+      }
+
+      if (!crearNuevaVersion) {
+        const keepIds = new Set(
+          sections
+            .map((s) => s.codigo_formulario_tabla)
+            .filter((id): id is number => !!id)
+        );
+        for (const oldId of baselineLinkIds.current) {
+          if (!keepIds.has(oldId)) {
+            await formularioTablaService.delete(oldId);
+          }
         }
       }
 
       for (const sec of sections) {
         await formularioTablaService.save({
-          codigo_formulario_tabla: sec.codigo_formulario_tabla || 0,
+          codigo_formulario_tabla: crearNuevaVersion ? 0 : sec.codigo_formulario_tabla || 0,
           codigo_formulario: codigoFormulario,
           codigo_tabla: sec.codigo_tabla,
           cabecera_formulario: sec.cabecera.trim() || undefined,
@@ -321,10 +481,13 @@ export default function FormularioEditor({
       await saveFormFormulaDrafts(tableIds, formulaDrafts);
 
       toast({
-        title: "Guardado",
-        description: isEdit
-          ? `Formulario "${nombre.trim()}" actualizado con fórmulas.`
-          : `Formulario "${nombre.trim()}" creado con ${sections.length} tabla(s) y fórmulas.`,
+        title: crearNuevaVersion ? "Nueva versión de formulario" : "Guardado",
+        description: crearNuevaVersion
+          ? `Se creó "${nombre.trim()}" v${versionNum} (#${codigoFormulario}). Los ensayos ya asignados a la versión anterior conservan sus tablas y resultados.`
+          : isEdit
+            ? `Formulario "${nombre.trim()}" actualizado con fórmulas.`
+            : `Formulario "${nombre.trim()}" creado con ${sections.length} tabla(s) y fórmulas.`,
+        duration: crearNuevaVersion ? 12000 : undefined,
       });
       onSuccess();
     } catch (error) {
@@ -344,6 +507,7 @@ export default function FormularioEditor({
     sections,
     formulario,
     isEdit,
+    tablesChanged,
     onSuccess,
     toast,
     formulaDrafts,
@@ -364,9 +528,9 @@ export default function FormularioEditor({
                 ? "Una sección usa una tabla inactiva"
                 : `${seccionesConTablaObsoleta.length} secciones usan tablas inactivas`}
               {" "}
-              (versión anterior reemplazada en el Editor de Tablas). Este formulario{" "}
-              <strong>no es válido</strong> hasta que selecciones la nueva versión activa de cada
-              tabla y vuelvas a definir las fórmulas.
+              (versión anterior reemplazada en el Editor de Tablas). Elige la versión activa de cada
+              tabla y guarda: se creará un <strong>formulario nuevo</strong>. Los ensayos que ya
+              usan esta versión conservan sus datos.
             </p>
           </div>
         </div>
@@ -385,13 +549,27 @@ export default function FormularioEditor({
             </CardDescription>
           </div>
           <div className="flex gap-2 shrink-0">
-            <Button variant="outline" onClick={onCancel} disabled={isSaving}>
+            <Button variant="outline" onClick={requestCancel} disabled={isSaving}>
               <X className="mr-2 h-4 w-4" />
               Cancelar
             </Button>
-            <Button onClick={handleSave} disabled={isSaving}>
+            <Button
+              onClick={() => {
+                if (tablesChanged) {
+                  setCloneConfirmOpen(true);
+                  return;
+                }
+                void handleSave();
+              }}
+              disabled={isSaving}
+              className={isEdit ? "bg-red-600 hover:bg-red-700" : ""}
+            >
               <Save className="mr-2 h-4 w-4" />
-              {isSaving ? "Guardando…" : "Guardar"}
+              {isSaving
+                ? "Guardando…"
+                : tablesChanged
+                  ? `Guardar como v${versionNueva}`
+                  : "Guardar"}
             </Button>
           </div>
         </CardHeader>
@@ -411,9 +589,17 @@ export default function FormularioEditor({
               id="version-form"
               type="number"
               min={1}
-              value={version}
+              value={tablesChanged ? versionNueva : version}
               onChange={(e) => setVersion(e.target.value)}
+              readOnly={tablesChanged}
+              disabled={tablesChanged}
+              className={tablesChanged ? "bg-muted" : undefined}
             />
+            {tablesChanged && (
+              <p className="text-[11px] text-muted-foreground">
+                Al cambiar las tablas se crea la versión {versionNueva}; la actual queda para los ensayos ya asignados.
+              </p>
+            )}
           </div>
           <div className="space-y-2">
             <Label>Estado</Label>
@@ -502,7 +688,7 @@ export default function FormularioEditor({
                         size="icon"
                         variant="ghost"
                         className="h-8 w-8 text-destructive"
-                        onClick={() => removeSection(sec._localId)}
+                        onClick={() => requestRemoveSection(sec._localId)}
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>
@@ -516,33 +702,15 @@ export default function FormularioEditor({
                         Tabla inactiva — elige la versión activa más reciente con el mismo nombre.
                       </p>
                     )}
-                    <Select
-                      value={
-                        sec.codigo_tabla != null
-                          ? String(sec.codigo_tabla)
-                          : undefined
+                    <TablaCombobox
+                      value={sec.codigo_tabla}
+                      onChange={(codigoTabla) =>
+                        requestTableChange(sec._localId, codigoTabla)
                       }
-                      onValueChange={(v) =>
-                        updateSection(sec._localId, {
-                          codigo_tabla: Number(v),
-                        })
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Seleccionar tabla…" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {disponibles.map((t) => (
-                          <SelectItem
-                            key={t.codigo_tabla}
-                            value={String(t.codigo_tabla)}
-                          >
-                            {formatTablaLabel(t)}
-                            {t.codigo_tabla ? ` (T${t.codigo_tabla}.*)` : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      tablas={disponibles}
+                      tiposEnsayo={tiposEnsayo}
+                      familias={familias}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label>Cabecera de sección</Label>
@@ -564,9 +732,10 @@ export default function FormularioEditor({
               <Info className="h-4 w-4 shrink-0 mt-0.5" />
               <p>
                 Si modificas una tabla en el <strong>Editor de Tablas</strong>, se crea una nueva
-                versión y la anterior queda inactiva. Debes volver aquí, reemplazar la tabla en cada
-                sección y redefinir las fórmulas. Marca celdas como{" "}
-                <strong>Calculada</strong> en la tabla y asigna alias antes de escribir expresiones.
+                versión y la anterior queda inactiva. Vuelve aquí, reemplaza la tabla y guarda: se
+                crea un formulario nuevo. Los ensayos ya asignados siguen con la versión anterior y
+                no pierden resultados. Marca celdas como <strong>Calculada</strong> y asigna alias
+                antes de escribir expresiones.
               </p>
             </div>
           </CardContent>
@@ -599,7 +768,105 @@ export default function FormularioEditor({
         drafts={formulaDrafts}
         onDraftsChange={setFormulaDrafts}
         isLoading={formulaLoading}
+        onDirtyChange={setFormulasDirty}
       />
+
+      <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Salir sin guardar?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Hay cambios en el formulario o en las fórmulas que no se han guardado. Si sales, se
+              perderán.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Seguir editando</AlertDialogCancel>
+            <AlertDialogAction onClick={onCancel}>Salir sin guardar</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!pendingTableChange}
+        onOpenChange={(open) => !open && setPendingTableChange(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Cambiar tabla?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tienes fórmulas sin guardar en el panel. Al cambiar la tabla se migrarán las
+              referencias T{"{id}"} a la nueva versión y se recargará el contexto (los cambios no
+              guardados del panel pueden perderse: guarda fórmulas antes si quieres conservarlos
+              tal cual).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (!pendingTableChange) return;
+                const { localId, codigoTabla } = pendingTableChange;
+                setPendingTableChange(null);
+                void applyTableChange(localId, codigoTabla);
+              }}
+            >
+              Cambiar y migrar fórmulas
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={cloneConfirmOpen} onOpenChange={setCloneConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Crear nueva versión del formulario?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Cambiaste las tablas de este formulario. Se creará la versión{" "}
+              <strong>v{versionNueva}</strong> y la actual quedará inactiva. Los ensayos que ya
+              tenían esta versión conservan sus tablas y resultados; los nuevos usarán v{versionNueva}.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setCloneConfirmOpen(false);
+                void handleSave();
+              }}
+            >
+              Crear versión v{versionNueva}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!pendingRemoveSection}
+        onOpenChange={(open) => !open && setPendingRemoveSection(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Quitar sección?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tienes fórmulas sin guardar. Al quitar la sección se recargará el contexto y se
+              perderán esos cambios.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (!pendingRemoveSection) return;
+                removeSection(pendingRemoveSection);
+                setPendingRemoveSection(null);
+              }}
+            >
+              Quitar y descartar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -2,8 +2,8 @@
 import type { EnsayoCategoriaEnsayo, EnsayoMediciones, Familia, Muestra, Resultado, Solicitud, TipoUsuarioAplicacion } from "@/types/interfaces";
 import type { BodyListResponse } from "@/types/body-list-response";
 import type { BodyResponse } from "@/types/body-response";
-import { environment } from "@/environments/environments.prod";
 import { fetchWithAuth } from "@/lib/http-client";
+import { environment } from "@/environments/environments.prod";
 
 const API_URL = `${environment.apiAPP}/api/solicitud`;
 
@@ -49,11 +49,11 @@ export const solicitudService = {
     }
   },
 
-  async getUltimaSolicitudFamilia(mnemonicoFamilia: string): Promise<BodyResponse<Solicitud>> {
+  async getUltimaSolicitudFamilia(mnemonicoFamilia: string, mes: string, anio: string): Promise<BodyResponse<Solicitud>> {
     const response = await fetchWithAuth(API_URL + '/getUltimaSolicitud', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mnemonicoFamilia: mnemonicoFamilia }),
+      body: JSON.stringify({ mnemonicoFamilia, mes, anio }),
     });
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({ message: 'Error desconocido' }));

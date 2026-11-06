@@ -1,33 +1,42 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent,
+} from "react";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
   Save, X, Merge, SplitSquareHorizontal, SplitSquareVertical, Plus, Minus, Copy, ClipboardPaste,
-  GripVertical, ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
+  GripVertical, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Layers, Undo2,
 } from "lucide-react";
 import type {
-  Tabla, TipoEnsayo, Columna, Celda, TipoCelda, Formulario, FormularioTabla,
+  Tabla, TipoEnsayo, Familia, Columna, Celda, TipoCelda, TipoDato, Formulario, FormularioTabla,
 } from "@/types/interfaces";
 import { tablaService } from "@/services/muestrasLaboratorio/tabla.service";
 import { columnaService } from "@/services/muestrasLaboratorio/columna.service";
 import { celdaService } from "@/services/muestrasLaboratorio/celda.service";
 import { formularioService } from "@/services/muestrasLaboratorio/formulario.service";
 import { formularioTablaService } from "@/services/muestrasLaboratorio/formularioTabla.service";
-import { purgeOrphanFormulasForTable } from "@/lib/formula/formula-persistence";
+import {
+  purgeOrphanFormulasForTable,
+  migrateFormulasOnTableReplace,
+  isFormulaEligible,
+} from "@/lib/formula/formula-persistence";
 import {
   bumpVersion,
   findFormulariosUsingTabla,
+  buildTablaStructureSnap,
+  hasStructuralGridChange,
   type FormularioAfectado,
+  type TablaStructureSnap,
 } from "@/lib/tabla-version";
 import {
   AlertDialog,
@@ -42,6 +51,12 @@ import {
 import { cn } from "@/lib/utils";
 
 const genId = () => Math.random().toString(36).slice(2, 10);
+
+/** Deshacer (Ctrl+Z): cuántos pasos atrás se guardan como máximo. */
+const MAX_UNDO_STEPS = 10;
+/** Cambios seguidos (ej. escribiendo un alias letra a letra) dentro de esta
+ * ventana se juntan en UN solo paso de deshacer, en vez de uno por tecla. */
+const UNDO_COALESCE_MS = 700;
 
 function clampInt(raw: string, min: number, max: number, fallback: number): number {
   if (raw.trim() === "") return fallback;
@@ -78,6 +93,20 @@ function resolveTipoTabla(option: string, otro: string): string | null {
 }
 
 type TipoCeldaLocal = TipoCelda;
+type TipoDatoLocal = TipoDato;
+
+/** Opciones de tipo_dato (deben coincidir con TIPOS_DATO_VALIDOS del backend). */
+const TIPOS_DATO: { value: TipoDatoLocal; label: string }[] = [
+  { value: "texto", label: "Texto" },
+  { value: "entero", label: "Número" },
+  { value: "double", label: "Doble Precisión" },
+  { value: "fecha", label: "Fecha" },
+  { value: "booleano", label: "Booleano" },
+  { value: "imagen", label: "Imagen" },
+  { value: "nulos", label: "Nulo (bloqueado)" },
+];
+
+const TIPO_DATO_DEFECTO: TipoDatoLocal = "texto";
 
 interface ColumnaLocal {
   _localId: string;
@@ -96,6 +125,7 @@ interface CeldaLocal {
   rowspan: number;
   colspan: number;
   tipo_celda: TipoCeldaLocal;
+  tipo_dato: TipoDatoLocal;
   alias: string;
   campo_obligatorio: boolean;
   estado: string;
@@ -106,6 +136,7 @@ interface CeldaLocal {
 interface Props {
   tabla: Tabla | null;
   tiposEnsayo: TipoEnsayo[];
+  familias: Familia[];
   onSuccess: () => void;
   onCancel: () => void;
 }
@@ -115,6 +146,39 @@ interface SelRange {
   c1: number;
   r2: number;
   c2: number;
+}
+
+/** Foto de todo lo que define "la tabla que se está construyendo" — lo que
+ * Ctrl+Z debe poder devolver. Deliberadamente NO incluye metadatos de
+ * clasificación (nombre, tipo de ensayo, tipo de tabla): el deshacer es sobre
+ * la grilla, no sobre el formulario de arriba. */
+interface TablaSnapshot {
+  columnas: ColumnaLocal[];
+  celdas: CeldaLocal[];
+  numeroColumnas: number;
+  numeroFilasCabecera: number;
+  filasCuerpo: number;
+  filasMuestra: number;
+  filasExtra: number;
+}
+
+/** Propiedades copiables de una celda (Ctrl+C/V de rango) — no incluye
+ * posición/span: el pegado siempre escribe celdas 1×1 sueltas en el destino. */
+interface CeldaClip {
+  tipo_celda: TipoCeldaLocal;
+  tipo_dato: TipoDatoLocal;
+  alias: string;
+  /** true si `alias` era exactamente la auto-referencia de SU posición de
+   * origen (ver esAliasAutoReferencia) — al pegar, esas SÍ se recalculan
+   * para la nueva posición; un alias personalizado se copia literal. */
+  esAliasAuto: boolean;
+  campo_obligatorio: boolean;
+}
+
+interface GridClipboard {
+  rows: number;
+  cols: number;
+  cells: CeldaClip[][];
 }
 
 const TIPO_COLORS: Record<TipoCeldaLocal, string> = {
@@ -144,30 +208,36 @@ function colLetter(n: number) {
   return s || "A";
 }
 
-function parseColumnNamesFromClipboard(text: string): string[] {
-  const normalized = text.replace(/\r/g, "").trim();
-  if (!normalized) return [];
-
-  const lines = normalized
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  // Columna vertical (Excel: copiar columna hacia abajo)
-  if (lines.length > 1 && !normalized.includes("\t")) {
-    return lines;
-  }
-
-  // Fila horizontal con tabuladores
-  if (normalized.includes("\t")) {
-    return normalized.split("\t").map((s) => s.trim());
-  }
-
-  return [normalized];
+/** ¿Este alias es exactamente el auto-generado para SU PROPIA posición (col,
+ * fila) — colLetter+fila (ej. "A4"), o de una subcelda dividida (ej. "A4_2",
+ * donde "4" es la fila de INICIO del bloque, no la propia — ver
+ * splitVerticalInPlace)? Comparar contra la posición real (no solo la FORMA
+ * del texto) es clave: un alias personalizado como "Densidad1" tiene la
+ * misma pinta (letras+dígito) que una auto-referencia, pero en su columna
+ * real casi nunca calzaría con colLetter+fila exacto. Sin esta verificación,
+ * pegar una celda con nombre propio la reescribiría con un nombre inventado. */
+function esAliasAutoReferencia(alias: string, col: number, fila: number): boolean {
+  const letra = colLetter(col);
+  if (alias === `${letra}${fila}`) return true;
+  const m = alias.match(/^([A-Za-z]+)(\d+)_(\d+)$/);
+  if (!m || m[1] !== letra) return false;
+  const inicioBloque = Number(m[2]);
+  const subIndice = Number(m[3]);
+  return inicioBloque === fila - (subIndice - 1);
 }
 
-function serializeColumnNames(names: string[]): string {
-  return names.join("\t");
+/** Recalcula un alias auto-referencia (ya confirmado con esAliasAutoReferencia)
+ * para la posición de destino — así Ctrl+V actualiza la referencia en vez de
+ * copiarla literal (ej. pegar "A4_2" de la columna A en la D da "D4_2"). */
+function alinearAliasADestino(alias: string, destFila: number, destCol: number): string {
+  const letra = colLetter(destCol);
+  const m = alias.match(/^[A-Za-z]+\d+_(\d+)$/);
+  if (!m) return `${letra}${destFila}`;
+  const subIndice = Number(m[1]);
+  // La subcelda i-ésima de una división vertical usa la fila de INICIO del
+  // bloque, no su propia fila (ver splitVerticalInPlace) — se reconstruye acá.
+  const filaInicioBloque = destFila - (subIndice - 1);
+  return `${letra}${filaInicioBloque}_${subIndice}`;
 }
 
 /** Invierte filas insertadas por splitVertical: elimina filas y ajusta vecinos. */
@@ -217,18 +287,6 @@ function cellOverlapsRect(
   const er = c.fila + c.rowspan - 1;
   const ec = c.col + c.colspan - 1;
   return c.fila <= r2 && er >= r1 && c.col <= c2 && ec >= c1;
-}
-
-function cellExtendsOutsideRect(
-  c: CeldaLocal,
-  r1: number,
-  c1: number,
-  r2: number,
-  c2: number
-): boolean {
-  const er = c.fila + c.rowspan - 1;
-  const ec = c.col + c.colspan - 1;
-  return c.fila < r1 || er > r2 || c.col < c1 || ec > c2;
 }
 
 function clipCellToGrid(c: CeldaLocal, rows: number, cols: number): CeldaLocal | null {
@@ -292,6 +350,7 @@ function reconcileGridCells(
         rowspan: 1,
         colspan: 1,
         tipo_celda: inHeader ? "header" : "input",
+        tipo_dato: TIPO_DATO_DEFECTO,
         alias: inHeader ? "" : `${colLetter(col)}${r}`,
         campo_obligatorio: false,
         estado: "A",
@@ -303,22 +362,44 @@ function reconcileGridCells(
   return kept;
 }
 
-/** Inserta una fila en insertAt (1-based); las filas ≥ insertAt bajan una posición. */
+/** Inserta una fila en insertAt (1-based); las filas ≥ insertAt bajan una
+ * posición. Si una celda se MUEVE (no solo se agranda por quedar cruzada por
+ * la inserción) y su alias era una auto-referencia de su posición vieja, se
+ * recalcula para la posición nueva — si no, el alias queda apuntando a una
+ * fila que ya no es la suya (ver esAliasAutoReferencia/alinearAliasADestino,
+ * la misma lógica que usa Ctrl+V). */
 function insertGridRowAt(cells: CeldaLocal[], insertAt: number): CeldaLocal[] {
   return cells.map((c) => {
     const endRow = c.fila + c.rowspan - 1;
     if (endRow < insertAt) return c;
-    if (c.fila >= insertAt) return { ...c, fila: c.fila + 1 };
+    if (c.fila >= insertAt) {
+      const eraAuto = esAliasAutoReferencia(c.alias, c.col, c.fila);
+      const nuevaFila = c.fila + 1;
+      return {
+        ...c,
+        fila: nuevaFila,
+        alias: eraAuto ? alinearAliasADestino(c.alias, nuevaFila, c.col) : c.alias,
+      };
+    }
     return { ...c, rowspan: c.rowspan + 1 };
   });
 }
 
-/** Inserta una columna en insertAt (1-based); las columnas ≥ insertAt se corren a la derecha. */
+/** Inserta una columna en insertAt (1-based); las columnas ≥ insertAt se
+ * corren a la derecha, actualizando el alias igual que insertGridRowAt. */
 function insertGridColumnAt(cells: CeldaLocal[], insertAt: number): CeldaLocal[] {
   return cells.map((c) => {
     const endCol = c.col + c.colspan - 1;
     if (endCol < insertAt) return c;
-    if (c.col >= insertAt) return { ...c, col: c.col + 1 };
+    if (c.col >= insertAt) {
+      const eraAuto = esAliasAutoReferencia(c.alias, c.col, c.fila);
+      const nuevoCol = c.col + 1;
+      return {
+        ...c,
+        col: nuevoCol,
+        alias: eraAuto ? alinearAliasADestino(c.alias, c.fila, nuevoCol) : c.alias,
+      };
+    }
     return { ...c, colspan: c.colspan + 1 };
   });
 }
@@ -437,6 +518,7 @@ function splitVerticalInPlace(
       rowspan: 1,
       colspan: 1,
       tipo_celda: cel.tipo_celda === "header" ? "header" : cel.tipo_celda,
+      tipo_dato: cel.tipo_dato,
       alias: n > 1 ? `${baseAlias}_${i + 1}` : baseAlias,
       campo_obligatorio: cel.campo_obligatorio,
       estado: cel.estado,
@@ -458,8 +540,11 @@ function splitVerticalInPlace(
 }
 
 type BaselineSnap = {
+  /** codigo_columna / codigo_celda del baseline (para silentDelete en in-place). */
   columnas: number[];
   celdas: number[];
+  /** Firma estructural al cargar (detectar altas/bajas de columnas/celdas). */
+  structure: TablaStructureSnap;
 };
 
 async function silentDelete(run: () => Promise<void>) {
@@ -470,16 +555,18 @@ async function silentDelete(run: () => Promise<void>) {
   }
 }
 
-export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }: Props) {
+export default function TablaEditor({ tabla, tiposEnsayo, familias, onSuccess, onCancel }: Props) {
   const { toast } = useToast();
   const isEdit = !!tabla?.codigo_tabla;
   const sourceVersion = tabla?.version ?? "1";
   const [isSaving, setIsSaving] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [formulariosAfectados, setFormulariosAfectados] = useState<FormularioAfectado[]>([]);
+  const [formulariosLoading, setFormulariosLoading] = useState(true);
   const baselineRef = useRef<BaselineSnap>({
     columnas: [],
     celdas: [],
+    structure: { colIndices: [], cellKeys: [] },
   });
 
   const [codigoTipoEnsayo, setCodigoTipoEnsayo] = useState<number | undefined>(tabla?.codigo_tipo_ensayo);
@@ -507,10 +594,19 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
   const [selectedCeldaIds, setSelectedCeldaIds] = useState<string[]>([]);
   const [colSel, setColSel] = useState<SelRange | null>(null);
   const [colDragging, setColDragging] = useState(false);
-  const columnNamesClipboardRef = useRef<{ names: string[]; text: string } | null>(null);
+  /** Ctrl+C/V de rangos de celdas (propiedades: tipo, tipo de dato, alias,
+   * obligatorio). */
+  const gridClipboardRef = useRef<GridClipboard | null>(null);
+  /** Ctrl+Z: pila de fotos previas de la grilla (ver TablaSnapshot). */
+  const undoStackRef = useRef<TablaSnapshot[]>([]);
+  const undoIsRestoringRef = useRef(false);
+  const undoPrevSnapshotRef = useRef<string | null>(null);
+  const undoLastPushAtRef = useRef(0);
+  const [canUndo, setCanUndo] = useState(false);
   const aliasInputRef = useRef<HTMLInputElement>(null);
   const aliasReplaceOnTypeRef = useRef(true);
   const gridWrapRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const selectedCellElRef = useRef<HTMLTableCellElement | null>(null);
   const floatPanelRef = useRef<HTMLDivElement | null>(null);
   const [floatPanelPos, setFloatPanelPos] = useState<{ top: number; left: number } | null>(null);
@@ -528,12 +624,37 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
   const hasTipoTabla = !!tipoTablaOption && (tipoTablaOption !== "5" || !!tipoTablaOtro.trim());
   /** Solo Datos Ensayo usa filas automáticas por probetas mínimas. */
   const esDatosEnsayo = tipoTablaOption === "2";
-  const canDesign = hasTipoEnsayo && hasTipoTabla;
+  // Al editar una tabla ya existente, su grilla siempre se puede ver/editar aunque le
+  // falte tipo_tabla (campo agregado después; las tablas creadas antes quedaron sin él).
+  // Igual se exige completarlo para poder GUARDAR (ver resolveTipoTabla en handleSave).
+  const canDesign = isEdit || (hasTipoEnsayo && hasTipoTabla);
 
   const tipoEnsayoSeleccionado = useMemo(
     () => tiposEnsayo.find((t) => t.codigo_tipo_ensayo === codigoTipoEnsayo),
     [tiposEnsayo, codigoTipoEnsayo]
   );
+
+  const familiaSeleccionada = useMemo(
+    () => familias.find((f) => f.codigo_familia === tipoEnsayoSeleccionado?.codigo_familia),
+    [familias, tipoEnsayoSeleccionado]
+  );
+
+  // Agrupa los tipos de ensayo por familia para que el selector deje evidente
+  // para qué familia se está diseñando la tabla (antes era una lista plana sin
+  // ese contexto, y era fácil elegir el tipo de ensayo equivocado).
+  const tiposEnsayoPorFamilia = useMemo(() => {
+    const grupos = new Map<number, { familia?: Familia; tipos: TipoEnsayo[] }>();
+    for (const t of tiposEnsayo) {
+      const key = t.codigo_familia ?? 0;
+      if (!grupos.has(key)) {
+        grupos.set(key, { familia: familias.find((f) => f.codigo_familia === key), tipos: [] });
+      }
+      grupos.get(key)!.tipos.push(t);
+    }
+    return Array.from(grupos.values())
+      .map((g) => ({ ...g, tipos: [...g.tipos].sort((a, b) => (a.nombre_tipo_ensayo || "").localeCompare(b.nombre_tipo_ensayo || "")) }))
+      .sort((a, b) => (a.familia?.nombre_familia || "Sin familia").localeCompare(b.familia?.nombre_familia || "Sin familia"));
+  }, [tiposEnsayo, familias]);
 
   const filasCuerpoEfectivas = esDatosEnsayo ? filasMuestra : filasCuerpo;
 
@@ -587,10 +708,136 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
     );
   }, [numFilasDiseno, numeroColumnas, numeroFilasCabecera, canDesign]);
 
+  // Ctrl+Z: registra un paso de deshacer cada vez que cambia algo de la grilla
+  // (celdas, columnas, o las dimensiones que la definen). Cambios seguidos muy
+  // cercanos en el tiempo (ej. escribir un alias letra a letra) se juntan en
+  // un solo paso — ver UNDO_COALESCE_MS.
+  useEffect(() => {
+    if (!canDesign) return;
+    const snapshot: TablaSnapshot = {
+      columnas,
+      celdas,
+      numeroColumnas,
+      numeroFilasCabecera,
+      filasCuerpo,
+      filasMuestra,
+      filasExtra,
+    };
+    const serialized = JSON.stringify(snapshot);
+
+    if (undoIsRestoringRef.current) {
+      undoIsRestoringRef.current = false;
+      undoPrevSnapshotRef.current = serialized;
+      return;
+    }
+    if (undoPrevSnapshotRef.current === null) {
+      // Primera vez (montaje / carga de la tabla a editar): solo establece la
+      // base, no hay nada previo que deshacer todavía.
+      undoPrevSnapshotRef.current = serialized;
+      return;
+    }
+    if (serialized === undoPrevSnapshotRef.current) return;
+
+    const now = Date.now();
+    if (now - undoLastPushAtRef.current > UNDO_COALESCE_MS) {
+      undoStackRef.current.push(JSON.parse(undoPrevSnapshotRef.current) as TablaSnapshot);
+      if (undoStackRef.current.length > MAX_UNDO_STEPS) undoStackRef.current.shift();
+      undoLastPushAtRef.current = now;
+      setCanUndo(true);
+    }
+    undoPrevSnapshotRef.current = serialized;
+  }, [columnas, celdas, numeroColumnas, numeroFilasCabecera, filasCuerpo, filasMuestra, filasExtra, canDesign]);
+
+  const handleUndo = useCallback(() => {
+    const prev = undoStackRef.current.pop();
+    if (!prev) return;
+    undoIsRestoringRef.current = true;
+    setColumnas(prev.columnas);
+    setCeldas(prev.celdas);
+    setNumeroColumnas(prev.numeroColumnas);
+    setNumeroFilasCabecera(prev.numeroFilasCabecera);
+    setFilasCuerpo(prev.filasCuerpo);
+    setFilasMuestra(prev.filasMuestra);
+    setFilasExtra(prev.filasExtra);
+    setCanUndo(undoStackRef.current.length > 0);
+    setSelectedCeldaId(null);
+    setSelectedCeldaIds([]);
+    setSel(null);
+  }, []);
+
+  // Al seleccionar celdas, la tarjeta "Propiedades" (arriba de la grilla)
+  // cambia de alto de golpe (aparecen los campos de la celda y/o el panel de
+  // asignación masiva). El scroll anchoring nativo del navegador "compensa"
+  // ese cambio de alto ajustando el scroll del contenedor de la página —
+  // eso se siente como que la pantalla salta sola hacia el alias / etiqueta.
+  // Se desactiva SOLO mientras este editor está montado.
+  useEffect(() => {
+    const targets: HTMLElement[] = [
+      document.documentElement,
+      document.body,
+      ...Array.from(
+        document.querySelectorAll<HTMLElement>(".overflow-y-auto, .overflow-auto")
+      ),
+    ];
+    const unique = [...new Set(targets)];
+    const previous = unique.map((node) => ({
+      value: node.style.getPropertyValue("overflow-anchor"),
+      priority: node.style.getPropertyPriority("overflow-anchor"),
+    }));
+    unique.forEach((node) => {
+      node.style.setProperty("overflow-anchor", "none", "important");
+    });
+    return () => {
+      unique.forEach((node, i) => {
+        if (previous[i].value) {
+          node.style.setProperty("overflow-anchor", previous[i].value, previous[i].priority);
+        } else {
+          node.style.removeProperty("overflow-anchor");
+        }
+      });
+    };
+  }, []);
+
+  /** Guarda/restaura el scroll de la página al cambiar la selección (el alto
+   * de "Propiedades" crece y, sin esto, el navegador salta hacia el input de
+   * alias aunque overflow-anchor esté en none). */
+  const savedPageScrollRef = useRef<{ el: HTMLElement; top: number; left: number }[] | null>(
+    null
+  );
+
+  const capturePageScroll = useCallback(() => {
+    const seen = new Set<HTMLElement>();
+    const list: { el: HTMLElement; top: number; left: number }[] = [];
+    const add = (el: HTMLElement | null | undefined) => {
+      if (!el || seen.has(el)) return;
+      seen.add(el);
+      list.push({ el, top: el.scrollTop, left: el.scrollLeft });
+    };
+    add(document.documentElement);
+    add(document.body);
+    document
+      .querySelectorAll<HTMLElement>(".overflow-y-auto, .overflow-auto")
+      .forEach((el) => add(el));
+    savedPageScrollRef.current = list;
+  }, []);
+
+  const restorePageScroll = useCallback(() => {
+    const list = savedPageScrollRef.current;
+    if (!list) return;
+    for (const { el, top, left } of list) {
+      if (el.scrollTop !== top) el.scrollTop = top;
+      if (el.scrollLeft !== left) el.scrollLeft = left;
+    }
+  }, []);
+
   // Cargar al editar
   useEffect(() => {
     if (!tabla?.codigo_tabla) {
-      baselineRef.current = { columnas: [], celdas: [] };
+      baselineRef.current = {
+        columnas: [],
+        celdas: [],
+        structure: { colIndices: [], cellKeys: [] },
+      };
       return;
     }
     let cancelled = false;
@@ -601,6 +848,11 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
           celdaService.getAll().catch(() => ({ data: [] as Celda[] })),
         ]);
         if (cancelled) return;
+        // Cargar la tabla NO cuenta como un cambio del usuario para Ctrl+Z —
+        // sin esto, el primer "Deshacer" te devolvía a la grilla vacía de
+        // antes de cargar en vez de deshacer una edición real (mismo flag
+        // que usa handleUndo al restaurar un paso).
+        undoIsRestoringRef.current = true;
         const allCols = Array.isArray(colRes.data) ? colRes.data : colRes.data ? [colRes.data] : [];
         const allCels = Array.isArray(celRes.data) ? celRes.data : celRes.data ? [celRes.data] : [];
 
@@ -637,12 +889,16 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
             rowspan: Math.max(1, c.rowspan || 1),
             colspan: Math.max(1, c.colspan || 1),
             tipo_celda: (c.tipo_celda as TipoCeldaLocal) || "input",
+            tipo_dato: (c.tipo_dato as TipoDatoLocal) || TIPO_DATO_DEFECTO,
             alias: c.alias || "",
             campo_obligatorio: !!c.campo_obligatorio,
             estado: c.estado || "A",
           }));
           setCeldas(mapped);
 
+          const colsLocal = colsTabla.map((c, i) => ({
+            indice: c.indice || i + 1,
+          }));
           baselineRef.current = {
             columnas: colsTabla
               .map((c) => c.codigo_columna)
@@ -650,13 +906,18 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
             celdas: celsTabla
               .map((c) => c.codigo_celda)
               .filter((id): id is number => typeof id === "number" && id > 0),
+            structure: buildTablaStructureSnap(colsLocal, mapped),
           };
         } else {
+          const colsLocal = colsTabla.map((c, i) => ({
+            indice: c.indice || i + 1,
+          }));
           baselineRef.current = {
             columnas: colsTabla
               .map((c) => c.codigo_columna)
               .filter((id): id is number => typeof id === "number" && id > 0),
             celdas: [],
+            structure: buildTablaStructureSnap(colsLocal, []),
           };
         }
 
@@ -704,9 +965,11 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
   useEffect(() => {
     if (!tabla?.codigo_tabla) {
       setFormulariosAfectados([]);
+      setFormulariosLoading(false);
       return;
     }
     let cancelled = false;
+    setFormulariosLoading(true);
     (async () => {
       try {
         const [linksRes, formsRes] = await Promise.all([
@@ -722,13 +985,30 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
           findFormulariosUsingTabla(tabla.codigo_tabla!, links, forms)
         );
       } catch {
-        setFormulariosAfectados([]);
+        // Ante la duda (no se pudo verificar), se asume que SÍ hay formularios afectados:
+        // fuerza el camino seguro (nueva versión) en vez de editar en el sitio a ciegas.
+        setFormulariosAfectados([{ codigo_formulario: -1, nombre_formulario: "(no verificado)" }]);
+      } finally {
+        if (!cancelled) setFormulariosLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [tabla?.codigo_tabla]);
+
+  // Nueva versión SOLO si la tabla ya está en formularios Y cambió la estructura
+  // (alta/baja de columnas o celdas). tipo_dato, alias, nombre, etc. → actualización.
+  const hasStructuralChange = useMemo(
+    () =>
+      isEdit &&
+      hasStructuralGridChange(baselineRef.current.structure, columnas, celdas),
+    [isEdit, columnas, celdas]
+  );
+  const usedByFormularios =
+    !formulariosLoading && formulariosAfectados.length > 0;
+  const needsNewVersion = isEdit && usedByFormularios && hasStructuralChange;
+  const canEditInPlace = isEdit && !formulariosLoading && !needsNewVersion;
 
   const cellAt = (fila: number, col: number) =>
     celdas.find((c) => c.fila === fila && c.col === col);
@@ -750,6 +1030,43 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
   const normSel = sel ? normalizeRange(sel) : null;
   const normColSel = colSel ? normalizeRange(colSel) : null;
 
+  /** Celdas cubiertas por la selección actual (rango arrastrado o Ctrl+clic),
+   * para permitir asignar el tipo de dato a varias celdas de una vez. */
+  const bulkCeldas = useMemo(() => {
+    if (selectedCeldaIds.length > 1) return selectedCeldas;
+    if (normSel) {
+      const inRange = celdas.filter((c) =>
+        cellOverlapsRect(c, normSel.r1, normSel.c1, normSel.r2, normSel.c2)
+      );
+      if (inRange.length > 1) return inRange;
+    }
+    return [];
+  }, [selectedCeldaIds, selectedCeldas, normSel, celdas]);
+  const [bulkTipoDato, setBulkTipoDato] = useState<TipoDatoLocal>(TIPO_DATO_DEFECTO);
+
+  useLayoutEffect(() => {
+    // Si el panel masivo está abierto, soltar el foco del alias evita que el
+    // navegador haga scrollIntoView hacia ese input (el "salto a etiqueta").
+    if (bulkCeldas.length > 1 && document.activeElement === aliasInputRef.current) {
+      aliasInputRef.current?.blur();
+    }
+    restorePageScroll();
+  }, [bulkCeldas.length, selectedCeldaId, selectedCeldaIds.length, restorePageScroll]);
+
+  const applyBulkTipoDato = () => {
+    const ids = new Set(bulkCeldas.map((c) => c._localId));
+    if (ids.size === 0) return;
+    setCeldas((prev) =>
+      prev.map((c) => (ids.has(c._localId) ? { ...c, tipo_dato: bulkTipoDato } : c))
+    );
+    toast({
+      title: "Tipo de dato aplicado",
+      description: `${ids.size} celda(s) actualizadas a "${
+        TIPOS_DATO.find((t) => t.value === bulkTipoDato)?.label ?? bulkTipoDato
+      }".`,
+    });
+  };
+
   const activeColRange = useMemo(() => {
     if (normColSel) return { c1: normColSel.c1, c2: normColSel.c2 };
     if (normSel) return { c1: normSel.c1, c2: normSel.c2 };
@@ -758,6 +1075,9 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
   }, [normColSel, normSel, selectedCelda]);
 
   const beginSelect = (r: number, c: number, e?: MouseEvent) => {
+    // Congelar scroll ANTES de que Propiedades cambie de alto (panel masivo /
+    // campos de celda); se restaura en useLayoutEffect.
+    capturePageScroll();
     setColSel(null);
     const owner = coverOwner(r, c);
     const id = owner?._localId || null;
@@ -806,125 +1126,156 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
 
   const endColSelect = () => setColDragging(false);
 
-  const copyColumnNames = useCallback(async () => {
-    if (!canDesign || !activeColRange) {
-      toast({
-        title: "Selecciona columnas",
-        description: "Arrastra en los encabezados de columna o selecciona un rango en la grilla.",
-        variant: "destructive",
-      });
-      return;
-    }
-    const { c1, c2 } = activeColRange;
-    const names = columnas
-      .filter((c) => c.indice >= c1 && c.indice <= c2)
-      .sort((a, b) => a.indice - b.indice)
-      .map((c) => c.nombre_columna);
-    if (!names.length) return;
-
-    const text = serializeColumnNames(names);
-    columnNamesClipboardRef.current = { names, text };
-
-    let clipboardOk = false;
-    try {
-      await navigator.clipboard.writeText(text);
-      clipboardOk = true;
-    } catch {
-      /* buffer interno disponible */
-    }
-
-    toast({
-      title: "Nombres copiados",
-      description: clipboardOk
-        ? `${names.length} columna(s): ${colLetter(c1)}${c1 !== c2 ? `–${colLetter(c2)}` : ""}`
-        : `${names.length} columna(s) en memoria (usa Pegar nombres).`,
-    });
-  }, [canDesign, activeColRange, columnas, toast]);
-
-  const pasteColumnNames = useCallback(
-    async (opts?: { fromKeyboard?: boolean }) => {
-      if (!canDesign || !activeColRange) {
-        toast({
-          title: "Selecciona columna destino",
-          description: "Haz clic en el encabezado o selecciona la primera columna destino.",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      const startCol = activeColRange.c1;
-      const internal = columnNamesClipboardRef.current;
-      let names: string[] = [];
-
-      if (opts?.fromKeyboard) {
-        try {
-          const text = await navigator.clipboard.readText();
-          const parsed = parseColumnNamesFromClipboard(text);
-          if (parsed.length) {
-            names = parsed;
-          }
-        } catch {
-          /* usar memoria interna */
-        }
-        if (!names.length && internal?.names.length) {
-          names = internal.names;
-        }
-      } else if (internal?.names.length) {
-        names = internal.names;
-      } else {
-        try {
-          const text = await navigator.clipboard.readText();
-          names = parseColumnNamesFromClipboard(text);
-        } catch {
-          toast({
-            title: "Nada que pegar",
-            description: "Copia nombres de columna primero.",
-            variant: "destructive",
-          });
-          return;
-        }
-      }
-
-      if (!names.length) {
-        toast({
-          title: "Nada que pegar",
-          description: "El portapapeles está vacío. Copia nombres primero.",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      columnNamesClipboardRef.current = { names, text: serializeColumnNames(names) };
-      setColumnas((prev) =>
-        prev.map((c) => {
-          const offset = c.indice - startCol;
-          if (offset < 0 || offset >= names.length) return c;
-          return { ...c, nombre_columna: names[offset] };
-        })
-      );
-
-      const applied = Math.min(names.length, numeroColumnas - startCol + 1);
-      const endCol = startCol + applied - 1;
-      toast({
-        title: "Nombres pegados",
-        description: `${applied} columna(s): ${colLetter(startCol)}${endCol !== startCol ? `–${colLetter(endCol)}` : ""}`,
-      });
-    },
-    [canDesign, activeColRange, numeroColumnas, toast]
-  );
-
   const updateCelda = (localId: string, patch: Partial<CeldaLocal>) => {
     setCeldas((prev) => prev.map((c) => (c._localId === localId ? { ...c, ...patch } : c)));
   };
 
+  /** Selecciona una celda por posición de grilla (equivalente a hacer clic en
+   * ella) — la usan tanto la navegación con flechas como, en el futuro,
+   * cualquier otro salto programático de foco. */
+  const selectCellAt = (fila: number, col: number) => {
+    capturePageScroll();
+    const owner = coverOwner(fila, col);
+    const id = owner?._localId || null;
+    setColSel(null);
+    setSelectedCeldaIds(id ? [id] : []);
+    setSelectedCeldaId(id);
+    setSel({ r1: fila, c1: col, r2: fila, c2: col });
+  };
+
+  /** Mueve la selección un paso en la dirección indicada, saltando el ancho/alto
+   * de la celda actual (para no quedarse "atrapado" dentro de una celda
+   * combinada) y sin salirse de la grilla. Devuelve false si no se movió. */
+  const moveSelection = (dr: number, dc: number): boolean => {
+    if (!selectedCelda) return false;
+    let targetRow = selectedCelda.fila;
+    let targetCol = selectedCelda.col;
+    if (dr < 0) targetRow = selectedCelda.fila - 1;
+    else if (dr > 0) targetRow = selectedCelda.fila + selectedCelda.rowspan;
+    if (dc < 0) targetCol = selectedCelda.col - 1;
+    else if (dc > 0) targetCol = selectedCelda.col + selectedCelda.colspan;
+    if (targetRow < 1 || targetRow > numFilasDiseno || targetCol < 1 || targetCol > numeroColumnas) {
+      return false;
+    }
+    selectCellAt(targetRow, targetCol);
+    return true;
+  };
+
+  /** Ctrl+C sobre un rango de celdas del cuerpo de la grilla — copia tipo,
+   * tipo de dato, alias y obligatoriedad de cada posición (resolviendo celdas
+   * combinadas a través de coverOwner; el pegado siempre escribe 1×1). */
+  const copySelectionCells = useCallback(() => {
+    if (!canDesign) return;
+    let r1: number, c1: number, r2: number, c2: number;
+    if (normSel) {
+      ({ r1, c1, r2, c2 } = normSel);
+    } else if (selectedCelda) {
+      r1 = selectedCelda.fila;
+      c1 = selectedCelda.col;
+      r2 = selectedCelda.fila + selectedCelda.rowspan - 1;
+      c2 = selectedCelda.col + selectedCelda.colspan - 1;
+    } else {
+      toast({
+        title: "Selecciona celdas",
+        description: "Arrastra un rango o selecciona una celda para copiar.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const rows = r2 - r1 + 1;
+    const cols = c2 - c1 + 1;
+    const grid: CeldaClip[][] = [];
+    for (let r = 0; r < rows; r++) {
+      const row: CeldaClip[] = [];
+      for (let c = 0; c < cols; c++) {
+        const owner = coverOwner(r1 + r, c1 + c);
+        row.push(
+          owner
+            ? {
+                tipo_celda: owner.tipo_celda,
+                tipo_dato: owner.tipo_dato,
+                alias: owner.alias,
+                esAliasAuto: esAliasAutoReferencia(owner.alias, owner.col, owner.fila),
+                campo_obligatorio: owner.campo_obligatorio,
+              }
+            : { tipo_celda: "input", tipo_dato: TIPO_DATO_DEFECTO, alias: "", esAliasAuto: false, campo_obligatorio: false }
+        );
+      }
+      grid.push(row);
+    }
+    gridClipboardRef.current = { rows, cols, cells: grid };
+    toast({ title: "Celdas copiadas", description: `${rows}×${cols} celda(s) — Ctrl+V para pegar.` });
+    // celdas: coverOwner() lee de celdas por closure — sin esto la copia podría quedar con datos viejos.
+  }, [canDesign, normSel, selectedCelda, celdas, toast]);
+
+  /** Ctrl+V del rango copiado con copySelectionCells — pega anclado en la
+   * celda/esquina superior-izquierda del destino seleccionado, agregando
+   * columnas (y filas, vía filasExtra) si el destino no entra en la grilla
+   * actual. Cualquier celda existente (incluidas combinadas) que se solape
+   * con el área de pegado se reemplaza por completo. */
+  const pasteSelectionCells = useCallback(() => {
+    if (!canDesign) return;
+    const clip = gridClipboardRef.current;
+    if (!clip) {
+      toast({ title: "Nada que pegar", description: "Copia celdas primero con Ctrl+C.", variant: "destructive" });
+      return;
+    }
+    const anchorRow = selectedCelda?.fila ?? normSel?.r1;
+    const anchorCol = selectedCelda?.col ?? normSel?.c1;
+    if (!anchorRow || !anchorCol) {
+      toast({
+        title: "Selecciona destino",
+        description: "Haz clic en la celda donde quieres pegar.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const targetR2 = anchorRow + clip.rows - 1;
+    const targetC2 = anchorCol + clip.cols - 1;
+    const finalRows = Math.max(numFilasDiseno, targetR2);
+    const finalCols = Math.max(numeroColumnas, targetC2);
+
+    if (targetC2 > numeroColumnas) setNumeroColumnas(targetC2);
+    if (targetR2 > numFilasDiseno) setFilasExtra((n) => n + (targetR2 - numFilasDiseno));
+
+    setCeldas((prev) => {
+      const kept = prev.filter((c) => !cellOverlapsRect(c, anchorRow, anchorCol, targetR2, targetC2));
+      const pasted: CeldaLocal[] = [];
+      for (let r = 0; r < clip.rows; r++) {
+        for (let c = 0; c < clip.cols; c++) {
+          const src = clip.cells[r][c];
+          const destFila = anchorRow + r;
+          const destCol = anchorCol + c;
+          pasted.push({
+            _localId: genId(),
+            fila: destFila,
+            col: destCol,
+            rowspan: 1,
+            colspan: 1,
+            tipo_celda: src.tipo_celda,
+            tipo_dato: src.tipo_dato,
+            alias: src.esAliasAuto ? alinearAliasADestino(src.alias, destFila, destCol) : src.alias,
+            campo_obligatorio: src.campo_obligatorio,
+            estado: "A",
+          });
+        }
+      }
+      return reconcileGridCells([...kept, ...pasted], finalRows, finalCols, numeroFilasCabecera);
+    });
+
+    toast({ title: "Celdas pegadas", description: `${clip.rows}×${clip.cols} celda(s) pegadas.` });
+  }, [canDesign, selectedCelda, normSel, numeroColumnas, numFilasDiseno, numeroFilasCabecera, toast]);
+
   useEffect(() => {
     aliasReplaceOnTypeRef.current = true;
-    if (!selectedCeldaId || !canDesign) return;
-    requestAnimationFrame(() => {
-      aliasInputRef.current?.focus();
-      aliasInputRef.current?.select();
-    });
-  }, [selectedCeldaId, canDesign]);
+    // No auto-enfocar el input "Alias / etiqueta" al seleccionar celdas:
+    // focus()+select() hace que el navegador scrollee hasta la tarjeta
+    // Propiedades (sobre todo con selección múltiple / panel masivo). El
+    // tipado de alias sigue funcionando vía el keydown global; al escribir
+    // se enfoca con preventScroll.
+  }, [selectedCeldaId]);
 
   useEffect(() => {
     setFloatPanelManualPos(null);
@@ -949,7 +1300,7 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
     });
   }, [selectedCelda, floatPanelManualPos]);
 
-  const beginFloatPanelDrag = (e: MouseEvent) => {
+  const beginFloatPanelDrag = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     const wrap = gridWrapRef.current;
@@ -962,7 +1313,7 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
       startLeft: floatPanelPos.left,
     };
 
-    const onMove = (ev: MouseEvent) => {
+    const onMove = (ev: globalThis.MouseEvent) => {
       const drag = floatPanelDragRef.current;
       if (!drag || !gridWrapRef.current) return;
 
@@ -1018,35 +1369,73 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
       const target = e.target as HTMLElement | null;
       const isCtrl = e.ctrlKey || e.metaKey;
       const inAliasInput = target === aliasInputRef.current;
-      const inColHeader = !!target?.closest("thead");
-      const inColNameInput =
-        inColHeader &&
-        target?.tagName === "INPUT" &&
-        (target as HTMLInputElement).placeholder !== "unidad";
-      const editingColName =
-        inColNameInput &&
-        document.activeElement === target &&
-        (target as HTMLInputElement).selectionStart !==
-          (target as HTMLInputElement).selectionEnd;
-      const multiColSel = !!(normColSel && normColSel.c1 !== normColSel.c2);
+      // Si hay texto seleccionado DENTRO del alias, Ctrl+C/X deben copiar ESE
+      // texto (comportamiento nativo del input), no el rango de celdas.
+      const aliasHasTextSelection =
+        inAliasInput &&
+        !!aliasInputRef.current &&
+        aliasInputRef.current.selectionStart !== aliasInputRef.current.selectionEnd;
+      // Form fields que NO son el alias (selects de tipo/tipo de dato, nombre
+      // de columna, unidad, etc.) — ahí no tocamos nada de lo nuestro.
+      const otherFormField = isFormField(e.target) && !inAliasInput;
 
-      // Copiar/pegar nombres de columna
+      // 1) Copiar/pegar el RANGO de celdas seleccionado (tipo, tipo de dato,
+      // alias, obligatorio) — funciona incluso con foco en el input de alias
+      // (que se auto-enfoca al seleccionar una celda), salvo que haya texto
+      // resaltado ahí adentro para copiar.
       if (isCtrl && (e.key === "c" || e.key === "C" || e.key === "v" || e.key === "V")) {
-        const shouldHandleColumns =
-          !editingColName &&
-          (multiColSel ||
-            (normColSel && !inColNameInput) ||
-            (!inAliasInput && !isFormField(e.target) && !!activeColRange));
-
-        if (shouldHandleColumns) {
+        if (!otherFormField && !aliasHasTextSelection && (normSel || selectedCeldaId)) {
           e.preventDefault();
           if (e.key === "c" || e.key === "C") {
-            void copyColumnNames();
+            copySelectionCells();
           } else {
-            void pasteColumnNames({ fromKeyboard: true });
+            pasteSelectionCells();
           }
           return;
         }
+      }
+
+      // 2) Deshacer — no interferir con el undo nativo de un campo de texto
+      // (ej. mientras se escribe el nombre de una columna).
+      if (isCtrl && !e.shiftKey && (e.key === "z" || e.key === "Z")) {
+        if (!isFormField(e.target)) {
+          e.preventDefault();
+          handleUndo();
+        }
+        return;
+      }
+
+      // 3) Navegar con flechas entre celdas — también funciona con foco en el
+      // input de alias (que se auto-enfoca al seleccionar una celda): Arriba/
+      // Abajo siempre saltan de celda; Izquierda/Derecha solo saltan cuando
+      // el cursor de texto ya está en el borde correspondiente (si no, mueven
+      // el cursor dentro del texto como es normal).
+      if (
+        !otherFormField &&
+        !isCtrl &&
+        !e.altKey &&
+        selectedCeldaId &&
+        (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight")
+      ) {
+        if (e.key === "ArrowUp") {
+          if (moveSelection(-1, 0)) e.preventDefault();
+          return;
+        }
+        if (e.key === "ArrowDown") {
+          if (moveSelection(1, 0)) e.preventDefault();
+          return;
+        }
+        const input = inAliasInput ? aliasInputRef.current : null;
+        if (e.key === "ArrowLeft") {
+          const atStart = !input || (input.selectionStart === 0 && input.selectionEnd === 0);
+          if (atStart && moveSelection(0, -1)) e.preventDefault();
+          return;
+        }
+        // ArrowRight
+        const len = input?.value.length ?? 0;
+        const atEnd = !input || (input.selectionStart === len && input.selectionEnd === len);
+        if (atEnd && moveSelection(0, 1)) e.preventDefault();
+        return;
       }
 
       if (isFormField(e.target)) {
@@ -1087,7 +1476,7 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
             })
           );
           requestAnimationFrame(() => {
-            aliasInputRef.current?.focus();
+            aliasInputRef.current?.focus({ preventScroll: true });
             const len = aliasInputRef.current?.value.length ?? 0;
             aliasInputRef.current?.setSelectionRange(len, len);
           });
@@ -1098,26 +1487,45 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [canDesign, copyColumnNames, pasteColumnNames, selectedCeldaId, normColSel, activeColRange]);
+  }, [
+    canDesign,
+    copySelectionCells,
+    pasteSelectionCells,
+    handleUndo,
+    selectedCeldaId,
+    selectedCelda,
+    celdas,
+    numFilasDiseno,
+    numeroColumnas,
+    normSel,
+  ]);
 
   const mergeSelection = () => {
     if (!normSel || !canDesign) return;
-    const { r1, c1, r2, c2 } = normSel;
+    let { r1, c1, r2, c2 } = normSel;
+
+    // Estilo Excel: si el rango elegido toca una celda ya fusionada sin cubrirla
+    // completa, se expande el rango para incluirla entera en vez de bloquear el
+    // combinado.
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const c of celdas) {
+        if (!cellOverlapsRect(c, r1, c1, r2, c2)) continue;
+        const er = c.fila + c.rowspan - 1;
+        const ec = c.col + c.colspan - 1;
+        if (c.fila < r1) { r1 = c.fila; changed = true; }
+        if (er > r2) { r2 = er; changed = true; }
+        if (c.col < c1) { c1 = c.col; changed = true; }
+        if (ec > c2) { c2 = ec; changed = true; }
+      }
+    }
+
     const rowspan = r2 - r1 + 1;
     const colspan = c2 - c1 + 1;
     if (rowspan === 1 && colspan === 1) return;
 
     const overlapping = celdas.filter((c) => cellOverlapsRect(c, r1, c1, r2, c2));
-    const extending = overlapping.filter((c) => cellExtendsOutsideRect(c, r1, c1, r2, c2));
-    if (extending.length > 0) {
-      toast({
-        title: "No se puede combinar",
-        description:
-          "Hay celdas fusionadas que sobresalen del rango. Sepáralas o elige un rango rectangular completo.",
-        variant: "destructive",
-      });
-      return;
-    }
 
     const expectedCells = rowspan * colspan;
     let covered = 0;
@@ -1164,7 +1572,7 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
   const unmergeSelected = () => {
     if (!selectedCelda) return;
     if (selectedCelda.rowspan === 1 && selectedCelda.colspan === 1) return;
-    const { fila, col, rowspan, colspan, tipo_celda } = selectedCelda;
+    const { fila, col, rowspan, colspan, tipo_celda, tipo_dato } = selectedCelda;
     const er = fila + rowspan - 1;
     const ec = col + colspan - 1;
 
@@ -1181,6 +1589,7 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
             rowspan: 1,
             colspan: 1,
             tipo_celda: r === fila && c === col ? selectedCelda.tipo_celda : tipo_celda,
+            tipo_dato: r === fila && c === col ? selectedCelda.tipo_dato : tipo_dato,
             alias:
               r === fila && c === col
                 ? selectedCelda.alias
@@ -1418,9 +1827,19 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
     const newCols = numeroColumnas + 1;
     setNumeroColumnas(newCols);
     setColumnas((prev) => {
-      const shifted = prev.map((col) =>
-        col.indice >= insertAt ? { ...col, indice: col.indice + 1 } : col
-      );
+      const shifted = prev.map((col) => {
+        if (col.indice < insertAt) return col;
+        // Igual que con el alias de las celdas: si el nombre era el default
+        // (la letra de SU columna vieja), se actualiza a la letra nueva. Un
+        // nombre personalizado (ej. "Peso") se respeta tal cual.
+        const eraDefault = col.nombre_columna === colLetter(col.indice);
+        const nuevoIndice = col.indice + 1;
+        return {
+          ...col,
+          indice: nuevoIndice,
+          nombre_columna: eraDefault ? colLetter(nuevoIndice) : col.nombre_columna,
+        };
+      });
       shifted.push({
         _localId: genId(),
         indice: insertAt,
@@ -1517,8 +1936,12 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
     setIsSaving(true);
     setConfirmOpen(false);
     const sourceTablaId = tabla?.codigo_tabla;
+    // Nueva versión solo con cambio estructural + formularios vinculados.
+    // Al editar en el sitio se reutilizan los codigo_* (actualizar filas existentes).
+    const createNewVersion = needsNewVersion;
+    const reuseIds = !createNewVersion;
     try {
-      if (!isEdit) {
+      if (reuseIds) {
         const baseline = baselineRef.current;
         const keepColIds = new Set(
           columnas
@@ -1542,14 +1965,14 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
       }
 
       const tablaSaved = await tablaService.save({
-        codigo_tabla: isEdit ? 0 : tabla?.codigo_tabla || 0,
+        codigo_tabla: createNewVersion ? 0 : tabla?.codigo_tabla || 0,
         codigo_tipo_ensayo: codigoTipoEnsayo,
         nombre_tabla: nombreTabla.trim(),
         tipo_tabla: tipoTablaResolved,
         filas_muestra: esDatosEnsayo ? filasMuestra : 0,
         numero_columnas: numeroColumnas,
         numero_filas_diseno: numFilasDiseno,
-        version,
+        version: createNewVersion ? version : tabla?.version || version,
         estado: "A",
       });
       const codigoTabla = (tablaSaved.data as Tabla)?.codigo_tabla;
@@ -1559,7 +1982,7 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
       const savedColIds: number[] = [];
       for (const col of columnas) {
         const saved = await columnaService.save({
-          codigo_columna: isEdit ? 0 : col.codigo_columna || 0,
+          codigo_columna: createNewVersion ? 0 : col.codigo_columna || 0,
           codigo_tabla: codigoTabla,
           indice: col.indice,
           nombre_columna: col.nombre_columna,
@@ -1578,7 +2001,7 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
       for (const cel of celdas) {
         const codigoColumna = colIdByIndice.get(cel.col);
         const saved = await celdaService.save({
-          codigo_celda: isEdit ? 0 : cel.codigo_celda || 0,
+          codigo_celda: createNewVersion ? 0 : cel.codigo_celda || 0,
           codigo_tabla: codigoTabla,
           codigo_columna: codigoColumna,
           fila: cel.fila,
@@ -1586,6 +2009,7 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
           rowspan: cel.rowspan,
           colspan: cel.colspan,
           tipo_celda: cel.tipo_celda,
+          tipo_dato: cel.tipo_dato,
           alias: cel.alias,
           campo_obligatorio: cel.campo_obligatorio,
           estado: cel.estado,
@@ -1597,7 +2021,7 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
         }
       }
 
-      if (isEdit && sourceTablaId && tabla) {
+      if (createNewVersion && sourceTablaId && tabla) {
         await tablaService.save({
           codigo_tabla: sourceTablaId,
           codigo_tipo_ensayo: tabla.codigo_tipo_ensayo,
@@ -1609,22 +2033,30 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
           version: tabla.version,
           estado: "I",
         });
+        // Copia fórmulas a las celdas nuevas y reescribe T{vieja}.* → T{nueva}.*
+        // en esa tabla (los formularios al cambiar de versión terminan la migración).
+        try {
+          await migrateFormulasOnTableReplace(sourceTablaId, codigoTabla, [codigoTabla]);
+        } catch {
+          /* no abortar el guardado de la tabla */
+        }
       }
 
-      const calculatedIds = new Set(
+      const formulaEligibleIds = new Set(
         celdas
-          .filter((c) => c.tipo_celda === "calculated")
+          .filter((c) => isFormulaEligible(c.tipo_celda, c.tipo_dato))
           .map((c) => celdaIdByLocal.get(c._localId))
           .filter((id): id is number => !!id)
       );
-      await purgeOrphanFormulasForTable(codigoTabla, calculatedIds);
+      await purgeOrphanFormulasForTable(codigoTabla, formulaEligibleIds);
 
       baselineRef.current = {
         columnas: savedColIds,
         celdas: savedCelIds,
+        structure: buildTablaStructureSnap(columnas, celdas),
       };
 
-      if (isEdit) {
+      if (createNewVersion) {
         const afectados =
           formulariosAfectados.length > 0
             ? ` Formularios afectados: ${formulariosAfectados
@@ -1633,8 +2065,14 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
             : "";
         toast({
           title: "Nueva versión creada",
-          description: `Tabla "${nombreTabla}" v${version} (#${codigoTabla}). La versión anterior (#${sourceTablaId}) quedó inactiva.${afectados} Actualiza los formularios en el Editor de Formularios y redefine las fórmulas.`,
+          description: `Tabla "${nombreTabla}" v${version} (#${codigoTabla}). La versión anterior (#${sourceTablaId}) quedó inactiva.${afectados} En Formularios reemplaza la tabla: se creará un formulario nuevo. Los ensayos ya capturados conservan la versión anterior y sus resultados.`,
           duration: 12000,
+        });
+      } else if (isEdit) {
+        toast({
+          title: "Cambios guardados",
+          description: `Tabla "${nombreTabla}" (#${codigoTabla}) actualizada — misma versión v${tabla?.version || sourceVersion}.`,
+          variant: "success",
         });
       } else {
         toast({
@@ -1658,7 +2096,7 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
   };
 
   const handleSaveClick = () => {
-    if (isEdit) {
+    if (needsNewVersion) {
       setConfirmOpen(true);
       return;
     }
@@ -1667,6 +2105,7 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
 
   return (
     <div
+      ref={rootRef}
       className="flex flex-col gap-3"
       onMouseUp={() => {
         endSelect();
@@ -1677,27 +2116,39 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
         endColSelect();
       }}
     >
-      {isEdit && (
+      {isEdit && formulariosLoading && (
+        <div className="rounded-md border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
+          Verificando si hay formularios usando esta tabla…
+        </div>
+      )}
+
+      {isEdit && !formulariosLoading && canEditInPlace && (
+        <div className="rounded-md border border-sky-300 bg-sky-50 px-4 py-3 text-sm text-sky-950">
+          <p className="font-medium">Estás actualizando esta tabla (misma versión)</p>
+          <p className="mt-1 text-sky-900/90">
+            Los cambios de tipo de dato, alias, tipos de celda, nombre, etc. se guardan en el sitio
+            (sigue siendo <strong>v{sourceVersion}</strong>, código #{tabla?.codigo_tabla}).
+            {usedByFormularios
+              ? " Solo al agregar o eliminar columnas o celdas se crearía una nueva versión."
+              : " Ningún formulario la usa aún; también puedes cambiar la estructura sin versionar."}
+          </p>
+        </div>
+      )}
+
+      {isEdit && !formulariosLoading && needsNewVersion && (
         <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
           <p className="font-medium">Estás creando una nueva versión de la tabla</p>
           <p className="mt-1 text-amber-900/90">
-            Los cambios se guardarán como versión <strong>v{version}</strong> (la actual es{" "}
-            <strong>v{sourceVersion}</strong>, código #{tabla?.codigo_tabla}). La versión anterior
-            quedará <strong>inactiva</strong>.
+            Detectamos alta o baja de <strong>columnas o celdas</strong>. Los cambios se guardarán
+            como versión <strong>v{version}</strong> (la actual es <strong>v{sourceVersion}</strong>,
+            código #{tabla?.codigo_tabla}). La versión anterior quedará <strong>inactiva</strong>.
           </p>
-          {formulariosAfectados.length > 0 ? (
-            <p className="mt-2 text-amber-900/90">
-              <strong>{formulariosAfectados.length}</strong> formulario(s) usan esta tabla y{" "}
-              <strong>dejarán de ser válidos</strong> hasta que los actualices en el{" "}
-              <strong>Editor de Formularios</strong>: reemplaza la tabla antigua por la nueva y
-              redefine las fórmulas (referencias <code className="text-xs bg-amber-100 px-1 rounded">T…</code>).
-            </p>
-          ) : (
-            <p className="mt-2 text-amber-900/90">
-              Ningún formulario usa esta tabla actualmente. Si la usas más adelante, asigna siempre
-              la versión activa más reciente.
-            </p>
-          )}
+          <p className="mt-2 text-amber-900/90">
+            <strong>{formulariosAfectados.length}</strong> formulario(s) usan esta tabla y{" "}
+            <strong>dejarán de ser válidos</strong> hasta que los actualices en el{" "}
+            <strong>Editor de Formularios</strong>: reemplaza la tabla antigua por la nueva y
+            redefine las fórmulas (referencias <code className="text-xs bg-amber-100 px-1 rounded">T…</code>).
+          </p>
         </div>
       )}
 
@@ -1756,12 +2207,27 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div>
               <CardTitle className="text-lg">
-                {isEdit ? "Nueva versión de tabla" : "Nueva tabla"}
+                {!isEdit ? "Nueva tabla" : needsNewVersion ? "Nueva versión de tabla" : "Editar tabla"}
               </CardTitle>
               <CardDescription>
-                Grilla tipo Excel: fusiones, tipos de celda y alias. Al modificar una tabla existente
-                se crea una nueva versión; las fórmulas se definen en el Editor de Formularios.
+                Grilla tipo Excel: fusiones, tipos de celda y alias.{" "}
+                {isEdit
+                  ? "Nueva versión solo al agregar o eliminar columnas/celdas si la tabla ya está en un formulario; el resto es actualización."
+                  : "Las fórmulas se definen en el Editor de Formularios."}
               </CardDescription>
+              {tipoEnsayoSeleccionado ? (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <Badge variant="secondary" className="gap-1">
+                    <Layers className="h-3 w-3" />
+                    {familiaSeleccionada?.nombre_familia || "Sin familia"}
+                  </Badge>
+                  <Badge variant="outline">{tipoEnsayoSeleccionado.nombre_tipo_ensayo}</Badge>
+                </div>
+              ) : (
+                <p className="mt-2 text-xs text-amber-700 font-medium">
+                  Aún no se ha seleccionado familia ni tipo de ensayo para esta tabla.
+                </p>
+              )}
             </div>
             <div className="flex gap-2">
               <Button type="button" variant="outline" onClick={onCancel} disabled={isSaving}>
@@ -1771,105 +2237,162 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
               <Button
                 type="button"
                 onClick={handleSaveClick}
-                disabled={isSaving}
-                variant={isEdit ? "destructive" : "default"}
-                className={isEdit ? "bg-red-600 hover:bg-red-700 text-white" : undefined}
+                disabled={isSaving || (isEdit && formulariosLoading)}
+                variant={needsNewVersion ? "destructive" : "default"}
+                className={needsNewVersion ? "bg-red-600 hover:bg-red-700 text-white" : undefined}
               >
                 <Save className="mr-2 h-4 w-4" />
                 {isSaving
-                  ? isEdit
+                  ? needsNewVersion
                     ? "Creando versión…"
                     : "Guardando..."
-                  : isEdit
-                    ? "Guardar nueva versión"
-                    : "Guardar"}
+                  : !isEdit
+                    ? "Guardar"
+                    : needsNewVersion
+                      ? "Guardar nueva versión"
+                      : "Guardar cambios"}
               </Button>
             </div>
           </div>
         </CardHeader>
-        <CardContent className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-          <div className="col-span-2 space-y-1">
-            <Label className="text-xs">Nombre</Label>
-            <Input
-              value={nombreTabla}
-              onChange={(e) => setNombreTabla(e.target.value)}
-              placeholder="Ej: Dimensiones iniciales"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Tipo de tabla *</Label>
-            <Select
-              value={tipoTablaOption || undefined}
-              onValueChange={(v) => {
-                setTipoTablaOption(v);
-                if (v !== "5") setTipoTablaOtro("");
-              }}
-            >
-              <SelectTrigger className={!tipoTablaOption ? "border-amber-400" : undefined}>
-                <SelectValue placeholder="Selecciona tipo" />
-              </SelectTrigger>
-              <SelectContent>
-                {TIPOS_TABLA.map((t) => (
-                  <SelectItem key={t.value} value={t.value}>
-                    {t.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {tipoTablaOption === "5" && (
-            <div className="col-span-2 space-y-1">
-              <Label className="text-xs">Especificar tipo *</Label>
-              <Input
-                value={tipoTablaOtro}
-                maxLength={50}
-                onChange={(e) => setTipoTablaOtro(e.target.value.slice(0, 50))}
-                placeholder="Nombre del tipo (máx. 50 caracteres)"
-                className={!tipoTablaOtro.trim() ? "border-amber-400" : undefined}
-              />
-              <p className="text-[10px] text-muted-foreground text-right">
-                {tipoTablaOtro.length}/50
-              </p>
-            </div>
-          )}
-          <div className="space-y-1">
-            <Label className="text-xs">Tipo de ensayo *</Label>
-            <Select
-              value={codigoTipoEnsayo ? String(codigoTipoEnsayo) : undefined}
-              onValueChange={(v) => setCodigoTipoEnsayo(Number(v))}
-            >
-              <SelectTrigger className={!hasTipoEnsayo ? "border-amber-400" : undefined}>
-                <SelectValue placeholder="Selecciona primero" />
-              </SelectTrigger>
-              <SelectContent>
-                {tiposEnsayo.map((t) => (
-                  <SelectItem key={t.codigo_tipo_ensayo} value={String(t.codigo_tipo_ensayo)}>
-                    {t.nombre_tipo_ensayo}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {esDatosEnsayo ? (
-            <>
-              <div className="space-y-1">
-                <Label className="text-xs">Filas muestra</Label>
-                <Input type="number" value={filasMuestra} readOnly disabled />
-                <p className="text-[10px] text-muted-foreground">
-                  {tipoEnsayoSeleccionado
-                    ? `${tipoEnsayoSeleccionado.nombre_tipo_ensayo}: ${tipoEnsayoSeleccionado.probetas_minimas ?? 0} probetas`
-                    : "Automático por probetas mínimas"}
-                </p>
+        <CardContent className="space-y-5">
+          {/* ── Clasificación: qué es esta tabla y para qué tipo de ensayo ── */}
+          <section className="space-y-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Clasificación
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="col-span-2 space-y-1">
+                <Label className="text-xs">Nombre *</Label>
+                <Input
+                  value={nombreTabla}
+                  onChange={(e) => setNombreTabla(e.target.value)}
+                  placeholder="Ej: Dimensiones iniciales"
+                  className={!nombreTabla.trim() ? "border-amber-400" : undefined}
+                />
               </div>
               <div className="space-y-1">
-                <Label className="text-xs">Filas extra</Label>
+                <Label className="text-xs">Tipo de tabla *</Label>
+                <Select
+                  value={tipoTablaOption || undefined}
+                  onValueChange={(v) => {
+                    setTipoTablaOption(v);
+                    if (v !== "5") setTipoTablaOtro("");
+                  }}
+                >
+                  <SelectTrigger className={!tipoTablaOption ? "border-amber-400" : undefined}>
+                    <SelectValue placeholder="Selecciona tipo" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TIPOS_TABLA.map((t) => (
+                      <SelectItem key={t.value} value={t.value}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Tipo de ensayo *</Label>
+                <Select
+                  value={codigoTipoEnsayo ? String(codigoTipoEnsayo) : undefined}
+                  onValueChange={(v) => setCodigoTipoEnsayo(Number(v))}
+                >
+                  <SelectTrigger className={!hasTipoEnsayo ? "border-amber-400" : undefined}>
+                    <SelectValue placeholder="Selecciona primero" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {tiposEnsayoPorFamilia.map((grupo) => (
+                      <SelectGroup key={grupo.familia?.codigo_familia ?? "sin-familia"}>
+                        <SelectLabel>{grupo.familia?.nombre_familia || "Sin familia"}</SelectLabel>
+                        {grupo.tipos.map((t) => (
+                          <SelectItem key={t.codigo_tipo_ensayo} value={String(t.codigo_tipo_ensayo)}>
+                            {t.nombre_tipo_ensayo}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {tipoEnsayoSeleccionado && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Familia:{" "}
+                    <span className="font-medium text-foreground">
+                      {familiaSeleccionada?.nombre_familia || "Sin familia"}
+                    </span>
+                  </p>
+                )}
+              </div>
+              {tipoTablaOption === "5" && (
+                <div className="col-span-2 md:col-span-4 space-y-1">
+                  <Label className="text-xs">Especificar tipo *</Label>
+                  <Input
+                    value={tipoTablaOtro}
+                    maxLength={50}
+                    onChange={(e) => setTipoTablaOtro(e.target.value.slice(0, 50))}
+                    placeholder="Nombre del tipo (máx. 50 caracteres)"
+                    className={!tipoTablaOtro.trim() ? "border-amber-400" : undefined}
+                  />
+                  <p className="text-[10px] text-muted-foreground text-right">
+                    {tipoTablaOtro.length}/50
+                  </p>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {/* ── Dimensiones de la grilla: todo lo que define el alto/ancho ── */}
+          <section className="space-y-3 border-t pt-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Dimensiones de la grilla
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Columnas</Label>
                 <div className="flex gap-1">
                   <Button
                     type="button"
                     size="icon"
                     variant="outline"
-                    disabled={!canDesign || filasExtra <= 0}
-                    onClick={() => setFilasExtra((n) => Math.max(0, n - 1))}
+                    disabled={!canDesign || numeroColumnas <= 1}
+                    onClick={() => setNumeroColumnas((n) => Math.max(1, n - 1))}
+                  >
+                    <Minus className="h-4 w-4" />
+                  </Button>
+                  <Input
+                    className="text-center"
+                    type="number"
+                    min={1}
+                    max={40}
+                    value={numeroColumnas}
+                    disabled={!canDesign}
+                    onChange={(e) =>
+                      setNumeroColumnas(clampInt(e.target.value, 1, 40, numeroColumnas))
+                    }
+                    onBlur={(e) =>
+                      setNumeroColumnas(clampInt(e.target.value, 1, 40, 1))
+                    }
+                  />
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    disabled={!canDesign}
+                    onClick={() => setNumeroColumnas((n) => Math.min(40, n + 1))}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Filas cabecera</Label>
+                <div className="flex gap-1">
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="outline"
+                    disabled={!canDesign || numeroFilasCabecera <= 0}
+                    onClick={() => setNumeroFilasCabecera((n) => Math.max(0, n - 1))}
                   >
                     <Minus className="h-4 w-4" />
                   </Button>
@@ -1877,193 +2400,183 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
                     className="text-center"
                     type="number"
                     min={0}
-                    max={40}
-                    value={filasExtra}
+                    max={10}
+                    value={numeroFilasCabecera}
                     disabled={!canDesign}
                     onChange={(e) =>
-                      setFilasExtra(clampInt(e.target.value, 0, 40, filasExtra))
+                      setNumeroFilasCabecera(
+                        clampInt(e.target.value, 0, 10, numeroFilasCabecera)
+                      )
                     }
-                    onBlur={(e) => setFilasExtra(clampInt(e.target.value, 0, 40, 0))}
+                    onBlur={(e) =>
+                      setNumeroFilasCabecera(clampInt(e.target.value, 0, 10, 0))
+                    }
                   />
                   <Button
                     type="button"
                     size="icon"
                     variant="outline"
                     disabled={!canDesign}
-                    onClick={() => setFilasExtra((n) => Math.min(40, n + 1))}
+                    onClick={() => setNumeroFilasCabecera((n) => Math.min(10, n + 1))}
                   >
                     <Plus className="h-4 w-4" />
                   </Button>
                 </div>
-                <p className="text-[10px] text-muted-foreground">
-                  Subceldas o filas de pie (también suman las divisiones verticales)
-                </p>
               </div>
-            </>
-          ) : (
-            <div className="space-y-1">
-              <Label className="text-xs">Filas cuerpo</Label>
-              <div className="flex gap-1">
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="outline"
-                  disabled={!canDesign || filasCuerpo <= 0}
-                  onClick={() => setFilasCuerpo((n) => Math.max(0, n - 1))}
-                >
-                  <Minus className="h-4 w-4" />
-                </Button>
-                <Input
-                  className="text-center"
-                  type="number"
-                  min={0}
-                  max={40}
-                  value={filasCuerpo}
-                  disabled={!canDesign}
-                  onChange={(e) =>
-                    setFilasCuerpo(clampInt(e.target.value, 0, 40, filasCuerpo))
-                  }
-                  onBlur={(e) =>
-                    setFilasCuerpo(clampInt(e.target.value, 0, 40, 0))
-                  }
-                />
-                <Button
-                  type="button"
-                  size="icon"
-                  variant="outline"
-                  disabled={!canDesign}
-                  onClick={() => setFilasCuerpo((n) => Math.min(40, n + 1))}
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
+              {esDatosEnsayo ? (
+                <>
+                  <div className="space-y-1">
+                    <Label className="text-xs flex items-center gap-1">
+                      Filas muestra
+                      <span className="rounded-sm bg-muted px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                        auto
+                      </span>
+                    </Label>
+                    <Input type="number" value={filasMuestra} readOnly disabled className="bg-muted" />
+                    <p className="text-[10px] text-muted-foreground">
+                      {tipoEnsayoSeleccionado
+                        ? `${tipoEnsayoSeleccionado.nombre_tipo_ensayo}: ${tipoEnsayoSeleccionado.probetas_minimas ?? 0} probetas`
+                        : "Automático por probetas mínimas"}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Filas extra</Label>
+                    <div className="flex gap-1">
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        disabled={!canDesign || filasExtra <= 0}
+                        onClick={() => setFilasExtra((n) => Math.max(0, n - 1))}
+                      >
+                        <Minus className="h-4 w-4" />
+                      </Button>
+                      <Input
+                        className="text-center"
+                        type="number"
+                        min={0}
+                        max={40}
+                        value={filasExtra}
+                        disabled={!canDesign}
+                        onChange={(e) =>
+                          setFilasExtra(clampInt(e.target.value, 0, 40, filasExtra))
+                        }
+                        onBlur={(e) => setFilasExtra(clampInt(e.target.value, 0, 40, 0))}
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        disabled={!canDesign}
+                        onClick={() => setFilasExtra((n) => Math.min(40, n + 1))}
+                      >
+                        <Plus className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground">
+                      Subceldas o filas de pie (también suman las divisiones verticales)
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <div className="space-y-1">
+                  <Label className="text-xs">Filas cuerpo</Label>
+                  <div className="flex gap-1">
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="outline"
+                      disabled={!canDesign || filasCuerpo <= 0}
+                      onClick={() => setFilasCuerpo((n) => Math.max(0, n - 1))}
+                    >
+                      <Minus className="h-4 w-4" />
+                    </Button>
+                    <Input
+                      className="text-center"
+                      type="number"
+                      min={0}
+                      max={40}
+                      value={filasCuerpo}
+                      disabled={!canDesign}
+                      onChange={(e) =>
+                        setFilasCuerpo(clampInt(e.target.value, 0, 40, filasCuerpo))
+                      }
+                      onBlur={(e) =>
+                        setFilasCuerpo(clampInt(e.target.value, 0, 40, 0))
+                      }
+                    />
+                    <Button
+                      type="button"
+                      size="icon"
+                      variant="outline"
+                      disabled={!canDesign}
+                      onClick={() => setFilasCuerpo((n) => Math.min(40, n + 1))}
+                    >
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground">Diseño libre (sin probetas)</p>
+                </div>
+              )}
+            </div>
+            <div className="rounded-md border border-slate-200 bg-slate-50/80 px-3 py-2 text-[11px] text-muted-foreground">
+              <strong className="text-slate-700">Tamaño actual:</strong> {numFilasDiseno} filas ×{" "}
+              {numeroColumnas} columnas
+              {canDesign ? (
+                <>
+                  {" "}
+                  — Usa <strong>Fila ↑</strong> / <strong>Col ←</strong> en la grilla para insertar
+                  filas o columnas en medio del diseño.{" "}
+                  {esDatosEnsayo
+                    ? "Las filas de muestra vienen del tipo de ensayo."
+                    : "Los controles +/− al final solo agrandan o reducen el borde."}
+                </>
+              ) : (
+                " — Selecciona tipo de tabla y tipo de ensayo para diseñar."
+              )}
+            </div>
+          </section>
+
+          {/* ── Metadatos: información de control, no editable directamente ── */}
+          <section className="space-y-3 border-t pt-4">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Metadatos
+            </p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs flex items-center gap-1">
+                  Versión
+                  <span className="rounded-sm bg-muted px-1 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                    auto
+                  </span>
+                </Label>
+                <Input value={version} readOnly disabled className="bg-muted" />
+                {isEdit && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Incremento automático desde v{sourceVersion}
+                  </p>
+                )}
               </div>
-              <p className="text-[10px] text-muted-foreground">Diseño libre (sin probetas)</p>
+              {!isEdit && (
+                <div className="space-y-1">
+                  <Label className="text-xs">Estado</Label>
+                  <Select value={estado} onValueChange={setEstado}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="A">Activo</SelectItem>
+                      <SelectItem value="I">Inactivo</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
             </div>
-          )}
-          <div className="space-y-1">
-            <Label className="text-xs">Columnas</Label>
-            <div className="flex gap-1">
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                disabled={!canDesign || numeroColumnas <= 1}
-                onClick={() => setNumeroColumnas((n) => Math.max(1, n - 1))}
-              >
-                <Minus className="h-4 w-4" />
-              </Button>
-              <Input
-                className="text-center"
-                type="number"
-                min={1}
-                max={40}
-                value={numeroColumnas}
-                disabled={!canDesign}
-                onChange={(e) =>
-                  setNumeroColumnas(clampInt(e.target.value, 1, 40, numeroColumnas))
-                }
-                onBlur={(e) =>
-                  setNumeroColumnas(clampInt(e.target.value, 1, 40, 1))
-                }
-              />
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                disabled={!canDesign}
-                onClick={() => setNumeroColumnas((n) => Math.min(40, n + 1))}
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Filas cabecera</Label>
-            <div className="flex gap-1">
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                disabled={!canDesign || numeroFilasCabecera <= 0}
-                onClick={() => setNumeroFilasCabecera((n) => Math.max(0, n - 1))}
-              >
-                <Minus className="h-4 w-4" />
-              </Button>
-              <Input
-                className="text-center"
-                type="number"
-                min={0}
-                max={10}
-                value={numeroFilasCabecera}
-                disabled={!canDesign}
-                onChange={(e) =>
-                  setNumeroFilasCabecera(
-                    clampInt(e.target.value, 0, 10, numeroFilasCabecera)
-                  )
-                }
-                onBlur={(e) =>
-                  setNumeroFilasCabecera(clampInt(e.target.value, 0, 10, 0))
-                }
-              />
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                disabled={!canDesign}
-                onClick={() => setNumeroFilasCabecera((n) => Math.min(10, n + 1))}
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-          <div className="col-span-2 md:col-span-4 lg:col-span-6 rounded-md border border-slate-200 bg-slate-50/80 px-3 py-2 text-[11px] text-muted-foreground">
-            <strong className="text-slate-700">Tamaño actual:</strong> {numFilasDiseno} filas ×{" "}
-            {numeroColumnas} columnas
-            {canDesign ? (
-              <>
-                {" "}
-                — Usa <strong>Fila ↑</strong> / <strong>Col ←</strong> en la grilla para insertar
-                filas o columnas en medio del diseño.{" "}
-                {esDatosEnsayo
-                  ? "Las filas de muestra vienen del tipo de ensayo."
-                  : "Los controles +/− al final solo agrandan o reducen el borde."}
-              </>
-            ) : (
-              " — Selecciona tipo de tabla y tipo de ensayo para diseñar."
-            )}
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Versión</Label>
-            <Input
-              value={version}
-              readOnly
-              disabled
-              className="bg-muted"
-            />
-            {isEdit && (
-              <p className="text-[10px] text-muted-foreground">
-                Incremento automático desde v{sourceVersion}
-              </p>
-            )}
-          </div>
-          {!isEdit && (
-            <div className="space-y-1">
-              <Label className="text-xs">Estado</Label>
-              <Select value={estado} onValueChange={setEstado}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="A">Activo</SelectItem>
-                  <SelectItem value="I">Inactivo</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+          </section>
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="[overflow-anchor:none]">
         <CardHeader className="py-3">
           <CardTitle className="text-base">Propiedades</CardTitle>
           <CardDescription className="text-xs">
@@ -2077,6 +2590,40 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          {bulkCeldas.length > 1 && (
+            <div className="space-y-2 rounded-md border border-violet-200 bg-violet-50/60 p-3">
+              <Label className="text-xs font-semibold">
+                Asignación masiva · {bulkCeldas.length} celdas seleccionadas
+              </Label>
+              <p className="text-[11px] text-muted-foreground leading-snug">
+                Arrastra un rango o usa Ctrl+clic para seleccionar varias celdas, elige el tipo de
+                dato y aplícalo a todas de una vez.
+              </p>
+              <div className="flex items-end gap-2 flex-wrap">
+                <div className="space-y-1">
+                  <Label className="text-xs">Tipo de dato</Label>
+                  <Select
+                    value={bulkTipoDato}
+                    onValueChange={(v) => setBulkTipoDato(v as TipoDatoLocal)}
+                  >
+                    <SelectTrigger className="w-[180px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TIPOS_DATO.map((t) => (
+                        <SelectItem key={t.value} value={t.value}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button type="button" size="sm" onClick={applyBulkTipoDato}>
+                  Aplicar a {bulkCeldas.length} celdas
+                </Button>
+              </div>
+            </div>
+          )}
           {selectedCelda ? (
             <>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -2098,6 +2645,28 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
                       <SelectItem value="label">Etiqueta</SelectItem>
                       <SelectItem value="input">Entrada</SelectItem>
                       <SelectItem value="calculated">Calculada</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Tipo de dato</Label>
+                  <Select
+                    value={selectedCelda.tipo_dato}
+                    onValueChange={(v) =>
+                      updateCelda(selectedCelda._localId, {
+                        tipo_dato: v as TipoDatoLocal,
+                      })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TIPOS_DATO.map((t) => (
+                        <SelectItem key={t.value} value={t.value}>
+                          {t.label}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
                 </div>
@@ -2181,9 +2750,9 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
                   </Button>
                 </div>
               </div>
-              {selectedCelda.tipo_celda === "calculated" && (
+              {isFormulaEligible(selectedCelda.tipo_celda, selectedCelda.tipo_dato) && (
                 <p className="text-[11px] text-violet-800 bg-violet-50 border border-violet-200 rounded-md p-2">
-                  La expresión de esta celda se define en el{" "}
+                  La expresión de esta celda (opcional para celdas de entrada) se define en el{" "}
                   <strong>Editor de Formularios</strong> cuando la tabla forme parte de un
                   formulario.
                 </p>
@@ -2212,23 +2781,34 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={!canDesign || !activeColRange}
-                onClick={() => void copyColumnNames()}
-                title="Ctrl+C"
+                disabled={!canUndo}
+                onClick={handleUndo}
+                title="Ctrl+Z — deshace el último cambio en la grilla (hasta 10 pasos)"
               >
-                <Copy className="mr-1 h-4 w-4" />
-                Copiar nombres
+                <Undo2 className="mr-1 h-4 w-4" />
+                Deshacer
               </Button>
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={!canDesign || !activeColRange}
-                onClick={() => void pasteColumnNames({ fromKeyboard: false })}
-                title="Ctrl+V"
+                disabled={!canDesign || (!normSel && !selectedCelda)}
+                onClick={copySelectionCells}
+                title="Ctrl+C — copia el rango de celdas seleccionado (tipo, tipo de dato, alias, obligatorio)"
+              >
+                <Copy className="mr-1 h-4 w-4" />
+                Copiar celdas
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={!canDesign || (!normSel && !selectedCelda)}
+                onClick={pasteSelectionCells}
+                title="Ctrl+V — pega las celdas copiadas, agregando columnas/filas si hace falta"
               >
                 <ClipboardPaste className="mr-1 h-4 w-4" />
-                Pegar nombres
+                Pegar celdas
               </Button>
               <Button
                 type="button"
@@ -2492,8 +3072,9 @@ export default function TablaEditor({ tabla, tiposEnsayo, onSuccess, onCancel }:
               </div>
             )}
             <p className="text-xs text-muted-foreground mt-2">
-              Ctrl+clic: selección múltiple (misma columna para dividir) · Encabezados: Ctrl+C/V
-              nombres · Panel flotante: subceldas · Combinar/Separar
+              Ctrl+clic: selección múltiple (misma columna para dividir) · Flechas: mover selección ·
+              Ctrl+C/V: copiar/pegar celdas (agrega columnas/filas si hace falta) · Ctrl+Z: deshacer
+              (10 pasos) · Panel flotante: subceldas · Combinar/Separar
             </p>
           </CardContent>
       </Card>

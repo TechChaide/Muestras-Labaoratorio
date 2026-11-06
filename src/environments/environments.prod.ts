@@ -11,10 +11,13 @@ export const environment = {
 
     basePath: process.env.NEXT_PUBLIC_BASE_PATH || '',
 
+    evidenciasFotosURL: process.env.NEXT_PUBLIC_EVIDENCIAS_FOTOS_URL || '/appdocs/Calidad/Ensayos_Laboratorio/EvidenciaFotos',
+    pantillasFormatos: process.env.NEXT_PUBLIC_PANTILLAS_FORMATOS || '/appdocs/Calidad/Ensayos_Laboratorio/InformesPlantillas',
     ////////////////////////////////////////Api de Seguridades
     //apiURL : '/seguridades/api',
     //apiURL : 'http://localhost:5400',
     apiURL : 'https://apps.chaide.com/seguridadesGuard',
+    apiSeguridadesINIT : 'https://apps.chaide.com/seguridades',
     
 
     ///////////////////////////////////////Api de reconocimiento Facial
@@ -22,8 +25,8 @@ export const environment = {
 
 
     /////////////////////////////////////Api Propia de la Aplicación
-    apiAPP: 'http://localhost:5400',
-    //apiAPP: 'https://apps.chaide.com/ensayosLaboratorioBA',
+    //apiAPP: 'http://localhost:5400',
+    apiAPP: 'https://apps.chaide.com/ensayosLaboratorioBA',
 
     tituloSistema: 'SISTEMA INTEGRADO DE SEGURIDADES',
 };

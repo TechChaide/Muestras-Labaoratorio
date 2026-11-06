@@ -13,6 +13,13 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  // Evita que el Client Router Cache de Next reutilice RSC viejos al navegar.
+  experimental: {
+    staleTimes: {
+      dynamic: 0,
+      static: 0,
+    },
+  },
   images: {
     remotePatterns: [
       {
@@ -30,32 +37,76 @@ const nextConfig: NextConfig = {
     ],
   },
   
-  // Agregar headers de seguridad para mitigar riesgos de XSS
+  // Headers de seguridad + caché (HTML fresco tras deploy; estáticos hasheados largos)
   async headers() {
     return [
       {
-        source: '/:path*',
+        source: "/_next/static/:path*",
         headers: [
           {
-            key: 'X-Content-Type-Options',
-            value: 'nosniff',
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
+      {
+        source: "/img/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=3600, must-revalidate",
+          },
+        ],
+      },
+      {
+        source: "/fonts/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=3600, must-revalidate",
+          },
+        ],
+      },
+      {
+        source: "/pdfjs/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=3600, must-revalidate",
+          },
+        ],
+      },
+      {
+        source: "/:path*",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "no-store, no-cache, max-age=0, must-revalidate",
           },
           {
-            key: 'X-Frame-Options',
-            value: 'DENY',
+            key: "Pragma",
+            value: "no-cache",
           },
           {
-            key: 'X-XSS-Protection',
-            value: '1; mode=block',
+            key: "X-Content-Type-Options",
+            value: "nosniff",
           },
           {
-            key: 'Referrer-Policy',
-            value: 'strict-origin-when-cross-origin',
+            key: "X-Frame-Options",
+            value: "DENY",
           },
-          // Content Security Policy - reduce riesgo de XSS
           {
-            key: 'Content-Security-Policy',
-            value: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https:; connect-src 'self' https: http://localhost:*;",
+            key: "X-XSS-Protection",
+            value: "1; mode=block",
+          },
+          {
+            key: "Referrer-Policy",
+            value: "strict-origin-when-cross-origin",
+          },
+          {
+            key: "Content-Security-Policy",
+            value:
+              "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data: https:; connect-src 'self' https: http://localhost:*;",
           },
         ],
       },

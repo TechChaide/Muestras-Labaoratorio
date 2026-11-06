@@ -35,7 +35,7 @@ export const serviciosService = {
   },
 
 
-    async getInformacionUsuarioExternoByIdentificacion(codigo: string): Promise<BodyResponse<InformacionExterna>> {
+  async getInformacionUsuarioExternoByIdentificacion(codigo: string): Promise<BodyResponse<InformacionExterna>> {
     const response = await fetchWithAuth(`${API_URL}/getInfUsrExtByIdentificador`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -48,5 +48,17 @@ export const serviciosService = {
     return response.json();
   },
 
+  async getUsersInfo(): Promise<BodyListResponse<any[]>> {
+    const response = await fetch(`${environment.apiSeguridadesINIT}/api/usuarios/fichasUsuarios`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
 
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({ message: 'Error al obtener usuarios.' }));
+      throw new Error(errorBody.message || 'Ocurrió un error desconocido.');
+    }
+
+    return response.json();
+  },
 };

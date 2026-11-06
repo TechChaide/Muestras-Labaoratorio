@@ -6,10 +6,14 @@ import type {
   Formulario,
   FormularioTabla,
   Tabla,
+  TipoEnsayo,
+  Familia,
 } from "@/types/interfaces";
 import { formularioService } from "@/services/muestrasLaboratorio/formulario.service";
 import { formularioTablaService } from "@/services/muestrasLaboratorio/formularioTabla.service";
 import { tablaService } from "@/services/muestrasLaboratorio/tabla.service";
+import { tipoEnsayoService } from "@/services/muestrasLaboratorio/tipoEnsayo.service";
+import { familiaService } from "@/services/muestrasLaboratorio/familia.service";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import FormularioList from "./components/formulario-list";
 import FormularioEditor from "./components/formulario-editor";
@@ -18,6 +22,8 @@ export default function FormulariosPage() {
   const [formularios, setFormularios] = useState<Formulario[]>([]);
   const [links, setLinks] = useState<FormularioTabla[]>([]);
   const [tablas, setTablas] = useState<Tabla[]>([]);
+  const [tiposEnsayo, setTiposEnsayo] = useState<TipoEnsayo[]>([]);
+  const [familias, setFamilias] = useState<Familia[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [selected, setSelected] = useState<Formulario | null>(null);
@@ -26,19 +32,25 @@ export default function FormulariosPage() {
   const fetchAll = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [fRes, lRes, tRes] = await Promise.all([
+      const [fRes, lRes, tRes, teRes, faRes] = await Promise.all([
         formularioService.getAll().catch(() => ({ data: [] as Formulario[] })),
         formularioTablaService
           .getAll()
           .catch(() => ({ data: [] as FormularioTabla[] })),
         tablaService.getAll().catch(() => ({ data: [] as Tabla[] })),
+        tipoEnsayoService.getAll().catch(() => ({ data: [] as TipoEnsayo[] })),
+        familiaService.getAll().catch(() => ({ data: [] as Familia[] })),
       ]);
       const fData = fRes.data || [];
       const lData = lRes.data || [];
       const tData = tRes.data || [];
+      const teData = teRes.data || [];
+      const faData = faRes.data || [];
       setFormularios(Array.isArray(fData) ? fData : [fData]);
       setLinks(Array.isArray(lData) ? lData : [lData]);
       setTablas(Array.isArray(tData) ? tData : [tData]);
+      setTiposEnsayo(Array.isArray(teData) ? teData : [teData]);
+      setFamilias(Array.isArray(faData) ? faData : [faData]);
     } catch (error) {
       toast({
         title: "Error",
@@ -98,6 +110,8 @@ export default function FormulariosPage() {
         <FormularioEditor
           formulario={selected}
           tablas={tablas}
+          tiposEnsayo={tiposEnsayo}
+          familias={familias}
           existingLinks={links}
           onSuccess={handleSuccess}
           onCancel={handleCancel}
@@ -106,6 +120,9 @@ export default function FormulariosPage() {
         <FormularioList
           formularios={formularios}
           links={links}
+          tablas={tablas}
+          tiposEnsayo={tiposEnsayo}
+          familias={familias}
           isLoading={isLoading}
           onEdit={handleEdit}
           onAddNew={handleAddNew}

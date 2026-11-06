@@ -648,6 +648,23 @@ export default function DashboardLayout({
         loadMenus();
     }, [toast, router]);
 
+    // Cargar ficha de todos los empleados activos una vez por sesión de dashboard;
+    // se cachea en localStorage para que use-users-info.ts la lea de forma síncrona
+    // en cualquier pantalla (p.ej. el combobox de responsable de agendamiento).
+    useEffect(() => {
+        const loadUsersInfo = async () => {
+            try {
+                const response = await serviciosService.getUsersInfo();
+                if (response?.data) {
+                    localStorage.setItem('usersInfo', JSON.stringify(response.data));
+                }
+            } catch (err) {
+                console.error('Error cargando información de usuarios:', err);
+            }
+        };
+        loadUsersInfo();
+    }, []);
+
     return (
         <ProtectedRoute>
             <SidebarProvider>

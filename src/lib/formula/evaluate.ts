@@ -34,6 +34,41 @@ function stdev(values: number[]): number {
   return Math.sqrt(varSum / (values.length - 1));
 }
 
+/** REDONDEAR.MAS: alejándose de cero, a N decimales (0 = entero). */
+function roundUp(x: number, digits = 0): number {
+  const d = Math.trunc(digits);
+  const f = Math.pow(10, d);
+  if (x >= 0) return Math.ceil(x * f - 1e-10) / f;
+  return Math.floor(x * f + 1e-10) / f;
+}
+
+/** REDONDEAR.MENOS: hacia cero, a N decimales (0 = entero). */
+function roundDown(x: number, digits = 0): number {
+  const d = Math.trunc(digits);
+  const f = Math.pow(10, d);
+  if (x >= 0) return Math.floor(x * f + 1e-10) / f;
+  return Math.ceil(x * f - 1e-10) / f;
+}
+
+/** Redondeo estándar a n decimales (REDONDEAR de Excel). */
+function roundToDecimals(x: number, decimales: number): number {
+  const factor = Math.pow(10, Math.trunc(decimales));
+  return Math.round(x * factor) / factor;
+}
+
+/** REDOND.MULT / MROUND: al múltiplo más cercano. */
+function mround(number: number, multiple: number): number {
+  if (multiple === 0) throw new Error("El múltiplo no puede ser 0");
+  return Math.round(number / multiple) * multiple;
+}
+
+/** Densidad de probabilidad de la normal N(media, desvEst) evaluada en x. */
+function normalPdf(x: number, media: number, desvEst: number): number {
+  if (desvEst <= 0) throw new Error("La desviación estándar debe ser mayor a 0");
+  const exponent = -((x - media) ** 2) / (2 * desvEst ** 2);
+  return Math.exp(exponent) / (desvEst * Math.sqrt(2 * Math.PI));
+}
+
 function resolve(node: FormulaNode, values: FormulaValueMap): number {
   switch (node.kind) {
     case "number":
@@ -66,11 +101,28 @@ function resolve(node: FormulaNode, values: FormulaValueMap): number {
           return l / r;
         case "^":
           return Math.pow(l, r);
+        case ">":
+          return l > r ? 1 : 0;
+        case "<":
+          return l < r ? 1 : 0;
+        case ">=":
+          return l >= r ? 1 : 0;
+        case "<=":
+          return l <= r ? 1 : 0;
+        case "=":
+          return l === r ? 1 : 0;
+        case "<>":
+          return l !== r ? 1 : 0;
         default:
           throw new Error("Operador no soportado");
       }
     }
     case "call": {
+      // SI: no resolver las dos ramas de antemano (evita errores en la no tomada).
+      if (node.name === "if") {
+        const cond = resolve(node.args[0], values);
+        return cond !== 0 ? resolve(node.args[1], values) : resolve(node.args[2], values);
+      }
       const args = node.args.map((a) => resolve(a, values));
       switch (node.name) {
         case "abs":
@@ -94,6 +146,16 @@ function resolve(node: FormulaNode, values: FormulaValueMap): number {
           return mode(args);
         case "stdev":
           return stdev(args);
+        case "roundup":
+          return roundUp(args[0], args[1] ?? 0);
+        case "rounddown":
+          return roundDown(args[0], args[1] ?? 0);
+        case "round":
+          return roundToDecimals(args[0], args[1]);
+        case "mround":
+          return mround(args[0], args[1]);
+        case "normpdf":
+          return normalPdf(args[0], args[1], args[2]);
         default:
           throw new Error("Función no soportada");
       }

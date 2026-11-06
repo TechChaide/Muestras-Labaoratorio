@@ -9,6 +9,8 @@
  * cross-table ya está soportado en el modelo lógico V2.
  */
 
+import { tokenize } from "./tokenize";
+
 export function tableRefPrefix(codigoTabla: number): string {
   return `T${codigoTabla}`;
 }
@@ -33,4 +35,34 @@ export function parseQualifiedRef(ref: string): {
 
 export function isCrossTableRef(ref: string): boolean {
   return parseQualifiedRef(ref).codigoTabla != null;
+}
+
+/**
+ * Reescribe refs cualificadas T{fromId}.* → T{toId}.* en una expresión.
+ * Usado al versionar / reemplazar una tabla en un formulario.
+ */
+export function rewriteTableRefsInExpression(
+  expresion: string,
+  fromTableId: number,
+  toTableId: number
+): string {
+  if (!expresion?.trim() || fromTableId === toTableId) return expresion;
+  const { tokens, error } = tokenize(expresion);
+  if (error) {
+    return expresion.replace(
+      new RegExp(`\\bT${fromTableId}\\.`, "gi"),
+      `T${toTableId}.`
+    );
+  }
+  const fromPrefix = `T${fromTableId}.`;
+  const toPrefix = `T${toTableId}.`;
+  return tokens
+    .map((t) => {
+      if (t.type !== "ident") return t.raw;
+      if (t.value.toUpperCase().startsWith(fromPrefix.toUpperCase())) {
+        return toPrefix + t.value.slice(fromPrefix.length);
+      }
+      return t.raw;
+    })
+    .join("");
 }

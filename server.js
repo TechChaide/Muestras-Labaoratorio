@@ -6,7 +6,7 @@ const fs = require('fs');
 const dev = process.env.NODE_ENV !== 'production';
 const app = next({ dev });
 const handle = app.getRequestHandler();
-const port = 9002; // El puerto que quieres usar
+const port = 9003; // El puerto que quieres usar
 
 const httpsOptions = {
   key: fs.readFileSync('./certs/localhost-key.pem'),

@@ -1,20 +1,19 @@
 # === Etapa 1: Builder - Instala dependencias y construye la aplicación ===
 FROM node:20-alpine AS builder
 
-# Establece el directorio de trabajo
 WORKDIR /app
 
-# Copia los archivos de definición de paquetes
+# basePath se inyecta en build (NEXT_PUBLIC_*); debe coincidir con Traefik/compose.
+ARG NEXT_PUBLIC_BASE_PATH=/Ensayos-Calidad
+ENV NEXT_PUBLIC_BASE_PATH=$NEXT_PUBLIC_BASE_PATH
+
 COPY package*.json ./
 
-# Instala las dependencias de producción
 RUN npm install
 
-# Copia el resto del código fuente de la aplicación
 COPY . .
 
-# Construye la aplicación Next.js para producción
-# La configuración 'output: standalone' en next.config.js es crucial aquí
+# La configuración 'output: standalone' en next.config es crucial aquí
 RUN npm run build
 
 # === Etapa 2: Runner - Crea la imagen final de producción ===
@@ -22,24 +21,32 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-# Crea un usuario no-root para mejorar la seguridad
-RUN addgroup --system --gid 1001 nextjs
-RUN adduser --system --uid 1001 nextjs
+# Grupo nodejs + usuario nextjs (plantilla oficial Next) — el chown usa nextjs:nodejs
+RUN addgroup --system --gid 1001 nodejs \
+  && adduser --system --uid 1001 nextjs
 
 # Copia los artefactos de la construcción desde la etapa 'builder'
-# Copia la carpeta 'public' para que las imágenes y otros assets funcionen
-COPY --from=builder /app/public ./public
-# Copia la salida 'standalone' que contiene el servidor optimizado y el código necesario
+# Copia la carpeta 'public' para los assets estáticos (imágenes/plantillas de
+# usuario YA NO viven acá — ver nota más abajo).
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Establece el usuario no-root para ejecutar la aplicación
+# Pre-crea las carpetas de subida (imágenes de celdas y plantillas de informes)
+# con el dueño correcto. El código escribe directamente en estas rutas
+# absolutas (environment.evidenciasFotosURL / environment.pantillasFormatos en
+# src/environments/environments.prod.ts), NO bajo public/. docker-compose.yml
+# monta volúmenes del host sobre estas mismas rutas exactas: esto solo sirve
+# de respaldo si se corre el contenedor sin esos volúmenes montados; con los
+# volúmenes del host, el dueño real lo determina el recurso montado (ver nota
+# de despliegue: hay que crearlos con chown/uid 1001 antes del primer run — y
+# si es un recurso SMB/CIFS de Windows, ese uid va en las opciones del mount,
+# no en un chown posterior).
+RUN mkdir -p /appdocs/Calidad/Ensayos_Laboratorio/EvidenciaFotos /appdocs/Calidad/Ensayos_Laboratorio/InformesPlantillas \
+    && chown -R nextjs:nodejs /appdocs
+
 USER nextjs
 
-# Expone el puerto en el que la aplicación se ejecutará
-# Tu docker-compose.override.yml ya mapea el puerto 3000 de Traefik a este contenedor
 EXPOSE 3000
 
-# Define el comando para iniciar el servidor de Next.js
-# El servidor 'server.js' es generado por la construcción 'standalone'
 CMD ["node", "server.js"]

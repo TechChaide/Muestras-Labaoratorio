@@ -126,14 +126,23 @@ export function FormulaMathPreview({
         Vista matemática (MathJax)
       </p>
       {status === "error" && (
-        <p className="text-xs text-destructive">{loadError}</p>
+        <div className="space-y-1 mb-2">
+          <p className="text-xs text-amber-800">
+            MathJax no disponible ({loadError}). Se muestra el LaTeX en texto.
+          </p>
+          {compiled.ok && (
+            <pre className="text-sm font-mono whitespace-pre-wrap break-all text-[#3d1f66] bg-white/60 rounded-md p-2 border border-[#c4a8e0]/60">
+              {compiled.latex}
+            </pre>
+          )}
+        </div>
       )}
       {!compiled.ok ? (
         <p className="text-xs text-amber-700">{compiled.error}</p>
-      ) : (
+      ) : status !== "error" ? (
         <div ref={hostRef} className="overflow-x-auto text-center text-lg py-1" />
-      )}
-      {compiled.ok && (
+      ) : null}
+      {compiled.ok && status !== "error" && (
         <p className="mt-2 text-[10px] text-[#5b2d8e]/70 font-mono break-all">
           {compiled.latex}
         </p>

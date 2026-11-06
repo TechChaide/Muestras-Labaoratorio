@@ -21,11 +21,14 @@ import {
   CardDescription,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { Formulario, FormularioTabla } from "@/types/interfaces";
+import type { Formulario, FormularioTabla, Tabla, TipoEnsayo, Familia } from "@/types/interfaces";
 
 interface Props {
   formularios: Formulario[];
   links: FormularioTabla[];
+  tablas: Tabla[];
+  tiposEnsayo: TipoEnsayo[];
+  familias: Familia[];
   isLoading: boolean;
   onEdit: (f: Formulario) => void;
   onAddNew: () => void;
@@ -34,6 +37,9 @@ interface Props {
 export default function FormularioList({
   formularios,
   links,
+  tablas,
+  tiposEnsayo,
+  familias,
   isLoading,
   onEdit,
   onAddNew,
@@ -44,6 +50,32 @@ export default function FormularioList({
     links.filter(
       (l) => l.codigo_formulario === codigo && (l.estado || "A") !== "I"
     ).length;
+
+  /** Un formulario no tiene familia/tipo de ensayo propios — se resuelven vía
+   * sus tablas enlazadas (Tabla.codigo_tipo_ensayo -> Tipo_ensayo.codigo_familia).
+   * Si sus tablas pertenecen a más de un tipo de ensayo (mezclado), se listan
+   * todos los distintos — útil justamente para detectar ese tipo de mezcla. */
+  const familiaTipoEnsayo = (codigoFormulario?: number): { familia: string; tipo: string }[] => {
+    const codigosTabla = links
+      .filter((l) => l.codigo_formulario === codigoFormulario && (l.estado || "A") !== "I")
+      .map((l) => l.codigo_tabla);
+
+    const tiposDistintos = new Set(
+      tablas
+        .filter((t) => codigosTabla.includes(t.codigo_tabla) && (t.estado || "A") !== "I")
+        .map((t) => t.codigo_tipo_ensayo)
+        .filter((c): c is number => c != null)
+    );
+
+    return Array.from(tiposDistintos).map((codigoTipo) => {
+      const tipo = tiposEnsayo.find((te) => te.codigo_tipo_ensayo === codigoTipo);
+      const familia = familias.find((f) => f.codigo_familia === tipo?.codigo_familia);
+      return {
+        familia: familia?.nombre_familia || "Sin familia",
+        tipo: tipo?.nombre_tipo_ensayo || `Tipo #${codigoTipo}`,
+      };
+    });
+  };
 
   const filtered = useMemo(() => {
     if (!filter.trim()) return formularios;
@@ -85,6 +117,7 @@ export default function FormularioList({
                 <TableHead>Código</TableHead>
                 <TableHead>Nombre</TableHead>
                 <TableHead>Versión</TableHead>
+                <TableHead>Familia / Tipo de ensayo</TableHead>
                 <TableHead>Tablas</TableHead>
                 <TableHead>Estado</TableHead>
                 <TableHead className="text-right">Acciones</TableHead>
@@ -94,7 +127,7 @@ export default function FormularioList({
               {isLoading
                 ? [...Array(4)].map((_, i) => (
                     <TableRow key={i}>
-                      <TableCell colSpan={6}>
+                      <TableCell colSpan={7}>
                         <Skeleton className="h-6 w-full" />
                       </TableCell>
                     </TableRow>
@@ -103,7 +136,7 @@ export default function FormularioList({
                   ? (
                     <TableRow>
                       <TableCell
-                        colSpan={6}
+                        colSpan={7}
                         className="text-center text-muted-foreground py-8"
                       >
                         No hay formularios. Crea uno y asocia tablas desde el
@@ -111,13 +144,28 @@ export default function FormularioList({
                       </TableCell>
                     </TableRow>
                     )
-                  : filtered.map((f) => (
+                  : filtered.map((f) => {
+                      const clasificaciones = familiaTipoEnsayo(f.codigo_formulario);
+                      return (
                       <TableRow key={f.codigo_formulario}>
                         <TableCell>{f.codigo_formulario}</TableCell>
                         <TableCell className="font-medium">
                           {f.nombre_formulario || "—"}
                         </TableCell>
                         <TableCell>{f.version_formulario ?? "—"}</TableCell>
+                        <TableCell>
+                          {clasificaciones.length === 0 ? (
+                            <span className="text-xs text-muted-foreground">Sin tablas enlazadas</span>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {clasificaciones.map((c, idx) => (
+                                <Badge key={idx} variant="outline" className="text-[11px] font-normal">
+                                  {c.familia} · {c.tipo}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+                        </TableCell>
                         <TableCell>{tablasCount(f.codigo_formulario)}</TableCell>
                         <TableCell>
                           <Badge
@@ -138,7 +186,8 @@ export default function FormularioList({
                           </Button>
                         </TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
             </TableBody>
           </Table>
         </div>

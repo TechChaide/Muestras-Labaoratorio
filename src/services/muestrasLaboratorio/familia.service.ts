@@ -1,9 +1,8 @@
-
 import type { EnsayoCategoriaEnsayo, EnsayoMediciones, Familia, TipoUsuarioAplicacion } from "@/types/interfaces";
 import type { BodyListResponse } from "@/types/body-list-response";
 import type { BodyResponse } from "@/types/body-response";
-import { environment } from "@/environments/environments.prod";
 import { fetchWithAuth } from "@/lib/http-client";
+import { environment } from "@/environments/environments.prod";
 
 const API_URL = `${environment.apiAPP}/api/Familia`;
 

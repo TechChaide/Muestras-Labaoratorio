@@ -136,19 +136,37 @@ export interface InformacionExterna {
 
 ///////////////////////////////////////////////////////////////////////////////////////
 
+/** Fila de la tabla `configuracion` en seguridadesGuard (config por aplicación). */
+export interface Configuracion {
+    codigo_configuracion: number;
+    codigo_aplicacion: string;
+    nombre_configuracion: string;
+    valor_configuracion: string;
+    descripcion_configuracion?: string;
+    estado?: string;
+    fecha_modificacion?: Date | string;
+    usuario_modificacion?: string;
+}
+
 export interface EnsayoCategoriaEnsayo {
     codigo_ensayo_categoria_ensayo: number;
     codigo_solicitud?: number;
-    codigo_muestra?: number;
+    codigo_muestra?: number | null;
     codigo_tipo_ensayo?: number;
     codigo_formulario?: number;
     responsable_ensayo?: string;
+    correo_responsable_ensayo?: string;
     fecha_inicio?: Date;
     fecha_fin?: Date;
     fecha_extension?: Date;
     estado?: string;
     fecha_creacion?: Date;
     usuario_creacion?: string;
+    /** Estado de revisión post-captura: 'PA' pendiente, 'AP' aprobado, 'RE' rechazado. */
+    codigo_estado_aprobacion?: string;
+    usuario_aprobacion?: string;
+    fecha_aprobacion?: Date;
+    observaciones_aprobacion?: string;
 }
 
 export interface EnsayoMediciones {
@@ -182,12 +200,12 @@ export interface Muestra {
     area_material?: string;
     detalle_material?: string;
     material?: string;
-    lote_serial?: string;
-    fecha_fabricacion?: string; // En el SQL está como varchar(50)
     fecha_carga?: Date;
     estado?: string;
     fecha_creacion?: Date;
     usuario_creacion?: string;
+    /** Identificador(es) de la(s) solicitud(es) a las que está asignada esta muestra — calculado por el backend. */
+    identificadores_ensayo?: string[];
 }
 
 export interface Resultado {
@@ -196,8 +214,9 @@ export interface Resultado {
     codigo_celda?: number;
     fecha_generacion?: Date;
     toma?: number;
-    valor?: number;
-    resultados?: string;
+    /** Número, o el texto exacto capturado ("108.12") para no recortarlo al serializar. */
+    valor?: number | string | null;
+    resultados?: string | null;
     estado?: string;
     fecha_creacion?: Date;
     usuario_creacion?: string;
@@ -223,6 +242,8 @@ export interface FormularioTabla {
     estado?: string;
     fecha_modificacion?: Date | string;
     usuario_modificacion?: string;
+    /** Tabla de la sección, cuando el backend la incluye (GET /Formulario/:id/tablas). */
+    tabla?: Tabla;
 }
 
 export interface Tabla {
@@ -253,6 +274,9 @@ export interface Columna {
 
 export type TipoCelda = "header" | "label" | "input" | "calculated";
 
+/** Tipo de dato del valor que se captura en la celda (ver celda.controller.js del backend). */
+export type TipoDato = "entero" | "double" | "fecha" | "texto" | "booleano" | "nulos" | "imagen";
+
 /** Celda ancla de la grilla Excel (fusiones vía rowspan/colspan). */
 export interface Celda {
     codigo_celda: number;
@@ -263,6 +287,7 @@ export interface Celda {
     rowspan?: number;
     colspan?: number;
     tipo_celda?: TipoCelda | string;
+    tipo_dato?: TipoDato | string;
     alias?: string;
     campo_obligatorio?: boolean;
     estado?: string;
@@ -296,6 +321,10 @@ export interface Solicitud {
     identificador_ensayo?: string;
     descripcion?: string;
     fecha_fab_adq?: Date;
+    lote_serial?: string;
+    fecha_fabricacion?: string;
+    /** Valores fijos: ver ORIGENES_SOLICITUD */
+    origen_solicitud?: string;
     correos_objetivo?: string;
     aceptacion_terminos?: boolean; // Mapeado de bit
     estado_solicitud?: string;
@@ -303,6 +332,10 @@ export interface Solicitud {
     fecha_modificacion?: Date;
     usuario_mnodificacion?: string;
 }
+
+/** Motivos fijos de origen de la solicitud (columna origen_solicitud). */
+export const ORIGENES_SOLICITUD = ["Solicitud Interna", "Solicitud externa"] as const;
+export type OrigenSolicitud = (typeof ORIGENES_SOLICITUD)[number];
 
 export interface TipoEnsayo {
     codigo_tipo_ensayo: number;

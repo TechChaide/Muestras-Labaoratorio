@@ -51,6 +51,36 @@ export function tokenize(input: string): { tokens: FormulaToken[]; error?: strin
       continue;
     }
 
+    // Separador de argumentos estilo Excel ES
+    if (ch === ";") {
+      tokens.push({ type: "op", value: ",", raw: ";" });
+      i += 1;
+      continue;
+    }
+
+    // Comparaciones Excel: >= <= <> = > <
+    if (ch === ">" || ch === "<" || ch === "=") {
+      const next = src[i + 1];
+      if (ch === ">" && next === "=") {
+        tokens.push({ type: "op", value: ">=", raw: ">=" });
+        i += 2;
+        continue;
+      }
+      if (ch === "<" && next === "=") {
+        tokens.push({ type: "op", value: "<=", raw: "<=" });
+        i += 2;
+        continue;
+      }
+      if (ch === "<" && next === ">") {
+        tokens.push({ type: "op", value: "<>", raw: "<>" });
+        i += 2;
+        continue;
+      }
+      tokens.push({ type: "op", value: ch as ">" | "<" | "=", raw: ch });
+      i += 1;
+      continue;
+    }
+
     return { tokens, error: `Carácter no soportado '${ch}' en posición ${i}` };
   }
 

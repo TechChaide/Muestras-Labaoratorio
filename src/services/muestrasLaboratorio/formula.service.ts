@@ -1,8 +1,8 @@
 import type { Formula } from "@/types/interfaces";
 import type { BodyListResponse } from "@/types/body-list-response";
 import type { BodyResponse } from "@/types/body-response";
-import { environment } from "@/environments/environments.prod";
 import { fetchWithAuth } from "@/lib/http-client";
+import { environment } from "@/environments/environments.prod";
 
 const API_URL = `${environment.apiAPP}/api/Formula`;
 
@@ -12,6 +12,15 @@ export const formulaService = {
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({ message: "Error desconocido" }));
       throw new Error(errorBody.message || "Failed to fetch formulas");
+    }
+    return response.json();
+  },
+
+  async getByTabla(codigoTabla: number): Promise<BodyListResponse<Formula>> {
+    const response = await fetchWithAuth(`${API_URL}/por-tabla?codigo_tabla=${codigoTabla}`);
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({ message: "Error desconocido" }));
+      throw new Error(errorBody.message || errorBody.error || "Failed to fetch formulas por tabla");
     }
     return response.json();
   },

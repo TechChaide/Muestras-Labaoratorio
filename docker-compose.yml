@@ -1,36 +1,57 @@
 networks:
-  b2b_network:
-    driver: bridge
   traefik-net:
     external: true
 
 services:
   frontend:
     build: .
-    image: cachaide/certificados-calidad-frontend:1.0
-    container_name: certificados-calidad_frontend_prod
+    image: techchaide/ensayos-laboratorio-frontend:1.0
+    container_name: ensayos-laboratorio_frontend_prod
     restart: unless-stopped
+    # Tras un rebuild con el mismo tag 1.0: docker compose up -d --force-recreate
+    # (o usar un tag con fecha/SHA) para no seguir sirviendo la imagen vieja.
     environment:
-      - NEXT_PUBLIC_BASE_PATH=/Certificados-Calidad
+      - NEXT_PUBLIC_BASE_PATH=/Ensayos-Calidad
       - HOSTNAME=0.0.0.0
+      # Proxy server-side → backend en la misma red Traefik (no usar apps.chaide.com:
+      # hairpin NAT da 502). container_name del compose del backend.
+      - API_APP_INTERNAL=http://ensayos_laboratorio_backend_service:5400
     volumes:
-      - "/fotomenu:/app/fotomenu"
+      # Formato: /ruta_host:/ruta_dentro_del_contenedor. Se monta sobre la MISMA
+      # ruta absoluta dentro del contenedor (no bajo public/): el código lee y
+      # escribe directamente en environment.evidenciasFotosURL /
+      # environment.pantillasFormatos (src/environments/environments.prod.ts),
+      # y las sirve vía /api/imagenes/... y /api/plantillas/... en vez de
+      # depender del estático de Next. Si cambias esas rutas en environments.prod.ts,
+      # actualiza también el lado derecho de estos volúmenes para que coincida.
+      #
+      # /appdocs/... vive en un recurso compartido de Windows (SMB/CIFS) montado
+      # en este host Linux — ver nota de permisos más abajo, el chown normal no
+      # aplica igual ahí.
+      # El código usa environment.pantillasFormatos / evidenciasFotosURL
+      # (= /appdocs/... por defecto). Antes el volumen iba a /app/public/plantillas
+      # y el contenedor escribía en otra ruta (overlay): al recrear el contenedor
+      # las plantillas "desaparecían" de la app aunque el share siguiera intacto.
+      # Se monta en ambas rutas por si alguna imagen vieja aún lee /app/public/...
+      - "/appdocs/Calidad/Ensayos_Laboratorio/EvidenciaFotos:/appdocs/Calidad/Ensayos_Laboratorio/EvidenciaFotos"
+      - "/appdocs/Calidad/Ensayos_Laboratorio/EvidenciaFotos:/app/public/uploads"
+      - "/appdocs/Calidad/Ensayos_Laboratorio/InformesPlantillas:/appdocs/Calidad/Ensayos_Laboratorio/InformesPlantillas"
+      - "/appdocs/Calidad/Ensayos_Laboratorio/InformesPlantillas:/app/public/plantillas"
     networks:
-      - b2b_network
       - traefik-net
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik-net"
-      - "traefik.http.routers.certificados-calidad-frontend-prod.rule=Host(`apps.chaide.com`) && (PathPrefix(`/Certificados-Calidad`) || PathPrefix(`/_next`) || PathPrefix(`/favicon.ico`))"
-      - "traefik.http.routers.certificados-calidad-frontend-prod.entrypoints=websecure"
-      - "traefik.http.routers.certificados-calidad-frontend-prod.priority=100"
+      - "traefik.http.routers.ensayos-laboratorio-frontend-prod.rule=Host(`apps.chaide.com`) && (PathPrefix(`/Ensayos-Calidad`) || PathPrefix(`/_next`) || PathPrefix(`/favicon.ico`))"
+      - "traefik.http.routers.ensayos-laboratorio-frontend-prod.entrypoints=websecure"
+      - "traefik.http.routers.ensayos-laboratorio-frontend-prod.priority=100"
       # Note: No stripPrefix middleware for frontend so the app receives the /b2b prefix.
-      - "traefik.http.routers.certificados-calidad-frontend-prod.tls=true"
-      - "traefik.http.services.certificados-calidad-frontend-prod.loadbalancer.server.port=3000"
+      - "traefik.http.routers.ensayos-laboratorio-frontend-prod.tls=true"
+      - "traefik.http.services.ensayos-laboratorio-frontend-prod.loadbalancer.server.port=3000"
 
       # --- LÍNEAS AÑADIDAS ---
       # 1. Define el middleware de la lista blanca de IPs
-      - "traefik.http.middlewares.lista-ips-calidad.ipwhitelist.sourceRange=127.0.0.1/32, 201.234.212.234/32"
+      #- "traefik.http.middlewares.lista-ips-calidad.ipwhitelist.sourceRange=127.0.0.1/32, 201.234.212.234/32"
 
       # 2. Aplica el middleware al router del frontend
-      - "traefik.http.routers.certificados-calidad-frontend-prod.middlewares=lista-ips-calidad"
+      #- "traefik.http.routers.ensayos-laboratorio-frontend-prod.middlewares=lista-ips-calidad"

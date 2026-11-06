@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
-import type { Tabla, TipoEnsayo } from "@/types/interfaces";
+import type { Familia, Tabla, TipoEnsayo } from "@/types/interfaces";
 import { tablaService } from "@/services/muestrasLaboratorio/tabla.service";
 import { tipoEnsayoService } from "@/services/muestrasLaboratorio/tipoEnsayo.service";
+import { familiaService } from "@/services/muestrasLaboratorio/familia.service";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import TablaList from "./components/tabla-list";
 import TablaEditor from "./components/tabla-editor";
@@ -12,6 +13,7 @@ import TablaEditor from "./components/tabla-editor";
 export default function EditorTablasPage() {
   const [tablas, setTablas] = useState<Tabla[]>([]);
   const [tiposEnsayo, setTiposEnsayo] = useState<TipoEnsayo[]>([]);
+  const [familias, setFamilias] = useState<Familia[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [selected, setSelected] = useState<Tabla | null>(null);
@@ -20,14 +22,17 @@ export default function EditorTablasPage() {
   const fetchAll = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [tRes, teRes] = await Promise.all([
+      const [tRes, teRes, faRes] = await Promise.all([
         tablaService.getAll().catch(() => ({ data: [] as Tabla[] })),
         tipoEnsayoService.getAll().catch(() => ({ data: [] as TipoEnsayo[] })),
+        familiaService.getAll().catch(() => ({ data: [] as Familia[] })),
       ]);
       const tData = tRes.data || [];
       const teData = teRes.data || [];
+      const faData = faRes.data || [];
       setTablas(Array.isArray(tData) ? tData : [tData]);
       setTiposEnsayo(Array.isArray(teData) ? teData : [teData]);
+      setFamilias(Array.isArray(faData) ? faData : [faData]);
     } catch (error) {
       toast({
         title: "Error",
@@ -73,8 +78,9 @@ export default function EditorTablasPage() {
         <CardContent>
           <p>
             Diseña tablas reutilizables en grilla tipo Excel (fusiones, tipos de celda y alias).
-            Modificar una tabla existente crea una <strong>nueva versión</strong>: la anterior queda
-            inactiva y los formularios que la usaban deben actualizarse en el Editor de Formularios.
+            Si la tabla ya está en un formulario, <strong>agregar o eliminar columnas/celdas</strong>{" "}
+            crea una <strong>nueva versión</strong>; el resto de cambios (tipo de dato, alias, etc.)
+            se guardan como <strong>actualización</strong> de la misma versión.
           </p>
         </CardContent>
       </Card>
@@ -83,6 +89,7 @@ export default function EditorTablasPage() {
         <TablaEditor
           tabla={selected}
           tiposEnsayo={tiposEnsayo}
+          familias={familias}
           onSuccess={handleSuccess}
           onCancel={handleCancel}
         />
@@ -90,9 +97,11 @@ export default function EditorTablasPage() {
         <TablaList
           tablas={tablas}
           tiposEnsayo={tiposEnsayo}
+          familias={familias}
           isLoading={isLoading}
           onEdit={handleEdit}
           onAddNew={handleAddNew}
+          onChanged={fetchAll}
         />
       )}
     </div>

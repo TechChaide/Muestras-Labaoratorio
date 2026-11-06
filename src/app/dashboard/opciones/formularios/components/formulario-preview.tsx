@@ -6,6 +6,7 @@ import { celdaService } from "@/services/muestrasLaboratorio/celda.service";
 import { columnaService } from "@/services/muestrasLaboratorio/columna.service";
 import { qualifyAlias } from "@/lib/formula/cross-table";
 import { Skeleton } from "@/components/ui/skeleton";
+import { formatAliasDisplay } from "@/lib/utils";
 
 export interface FormSectionPreview {
   _localId: string;
@@ -143,7 +144,7 @@ function MiniGrid({
                       }`}
                     >
                       <div className="truncate max-w-[120px]">
-                        {cel.alias || "·"}
+                        {formatAliasDisplay(cel.alias) || "·"}
                       </div>
                       {alias && (
                         <div className="text-[9px] text-muted-foreground truncate">

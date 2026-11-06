@@ -44,8 +44,11 @@
     "firebase": "^11.9.1",
     "genkit": "^1.14.1",
     "lucide-react": "^0.475.0",
-    "next": "15.3.3",
+    "mathjax-full": "^3.2.1",
+    "next": "15.5.28",
     "patch-package": "^8.0.0",
+    "pdfjs-dist": "^4.10.38",
+    "pdfmake": "^0.2.23",
     "react": "^18.3.1",
     "react-day-picker": "^8.10.1",
     "react-dom": "^18.3.1",
@@ -57,11 +60,15 @@
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/pdfmake": "^0.3.3",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "genkit-cli": "^1.14.1",
-    "postcss": "^8",
+    "postcss": "^8.5.31",
     "tailwindcss": "^3.4.1",
     "typescript": "^5"
+  },
+  "overrides": {
+    "postcss": "$postcss"
   }
 }
